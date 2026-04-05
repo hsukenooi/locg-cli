@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "locg"
+version = "0.1.0"
+description = "CLI for League of Comic Geeks"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+dependencies = [
+    "curl-cffi>=0.13.0",
+    "beautifulsoup4>=4.12.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+locg = "locg.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/locg"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
