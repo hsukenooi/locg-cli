@@ -52,10 +52,21 @@ def test_search_subcommand_help(monkeypatch, capsys):
     assert "query" in captured.out.lower() or "search" in captured.out.lower()
 
 
-def test_pretty_flag_passed_through(monkeypatch):
+def test_pretty_flag_before_subcommand(monkeypatch):
+    """--pretty works before or after the subcommand."""
     from locg.cli import create_parser
     parser = create_parser()
-    args = parser.parse_args(["--pretty", "search", "batman"])
+    # After subcommand (handled by subparser)
+    args = parser.parse_args(["search", "--pretty", "batman"])
     assert args.pretty is True
     assert args.command == "search"
     assert args.query == "batman"
+
+
+def test_pretty_flag_after_subcommand(monkeypatch):
+    """--pretty after subcommand is also handled."""
+    from locg.cli import create_parser
+    parser = create_parser()
+    args = parser.parse_args(["releases", "--pretty"])
+    assert args.pretty is True
+    assert args.command == "releases"

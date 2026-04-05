@@ -40,67 +40,81 @@ def output(data: Any, pretty: bool = False) -> None:
 
 
 def create_parser() -> argparse.ArgumentParser:
+    # Shared flags available on all subcommands
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
+    common.add_argument("--debug", action="store_true", help="Print HTTP debug info to stderr")
+
     parser = argparse.ArgumentParser(
         prog="locg",
         description="CLI for League of Comic Geeks",
+        parents=[common],
     )
     parser.add_argument("--version", action="version", version=f"locg {__version__}")
-    parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
-    parser.add_argument("--debug", action="store_true", help="Print HTTP debug info to stderr")
 
     sub = parser.add_subparsers(dest="command", help="Available commands")
 
     # search
-    p = sub.add_parser("search", help="Search for comic series")
+    p = sub.add_parser("search", parents=[common], help="Search for comic series")
     p.add_argument("query", help="Search term")
 
     # releases
-    p = sub.add_parser("releases", help="New releases for a given week")
+    p = sub.add_parser("releases", parents=[common], help="New releases for a given week")
     p.add_argument("--date", help="Week date (YYYY-MM-DD), default: this week")
 
     # comic
-    p = sub.add_parser("comic", help="Get comic details")
+    p = sub.add_parser("comic", parents=[common], help="Get comic details")
     p.add_argument("id", type=int, help="Comic ID")
 
     # series
-    p = sub.add_parser("series", help="Get series details and issue list")
+    p = sub.add_parser("series", parents=[common], help="Get series details and issue list")
     p.add_argument("id", type=int, help="Series ID")
 
     # collection
-    sub.add_parser("collection", help="View your collection (requires login)")
+    sub.add_parser("collection", parents=[common], help="View your collection (requires login)")
 
     # pull-list
-    sub.add_parser("pull-list", help="View your pull list (requires login)")
+    sub.add_parser("pull-list", parents=[common], help="View your pull list (requires login)")
 
     # wish-list
-    sub.add_parser("wish-list", help="View your wish list (requires login)")
+    sub.add_parser("wish-list", parents=[common], help="View your wish list (requires login)")
 
     # read-list
-    sub.add_parser("read-list", help="View your read list (requires login)")
+    sub.add_parser("read-list", parents=[common], help="View your read list (requires login)")
 
     # add
-    p = sub.add_parser("add", help="Add a comic to a list")
+    p = sub.add_parser("add", parents=[common], help="Add a comic to a list")
     p.add_argument("list", choices=VALID_LISTS, help="Target list")
     p.add_argument("comic_id", type=int, help="Comic ID")
 
     # remove
-    p = sub.add_parser("remove", help="Remove a comic from a list")
+    p = sub.add_parser("remove", parents=[common], help="Remove a comic from a list")
     p.add_argument("list", choices=VALID_LISTS, help="Target list")
     p.add_argument("comic_id", type=int, help="Comic ID")
 
     # login
-    sub.add_parser("login", help="Log in to League of Comic Geeks")
+    sub.add_parser("login", parents=[common], help="Log in to League of Comic Geeks")
 
     return parser
 
 
 def main() -> None:
+    # Pre-scan for global flags before argparse, since parent parser
+    # defaults can overwrite values when flags appear before subcommand
+    raw = sys.argv[1:]
+    pretty = "--pretty" in raw
+    debug = "--debug" in raw
+
     parser = create_parser()
     args = parser.parse_args()
 
     if not args.command:
         parser.print_help(sys.stderr)
         sys.exit(2)
+
+    # Use pre-scanned values (handles both `locg --pretty releases` and `locg releases --pretty`)
+    args.pretty = pretty
+    args.debug = debug
 
     if args.debug:
         set_debug(True)
