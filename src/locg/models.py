@@ -15,6 +15,9 @@ from locg.parser import (
 
 BASE_URL = "https://leagueofcomicgeeks.com"
 
+# Mapping from LOCG list IDs to human-readable names.
+_LIST_ID_TO_NAME = {1: "pull", 2: "collection", 3: "wish", 5: "read"}
+
 
 def _safe_int(value: Any, default: int = 0) -> int:
     """Convert a value to int, returning default if empty or invalid."""
@@ -24,6 +27,29 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (ValueError, TypeError):
         return default
+
+
+def _parse_list_membership(tag: Tag) -> Optional[dict[str, bool]]:
+    """Parse comic-controller spans to determine list membership.
+
+    Returns a dict like ``{"pull": False, "collection": True, ...}`` when
+    authenticated (i.e. spans carry ``data-list`` attributes), or ``None``
+    when unauthenticated.
+    """
+    controllers = tag.find_all(class_="comic-controller")
+    has_list_data = any(c.get("data-list") for c in controllers)
+    if not has_list_data:
+        return None
+    lists: dict[str, bool] = {name: False for name in _LIST_ID_TO_NAME.values()}
+    for ctrl in controllers:
+        data_list = ctrl.get("data-list")
+        if data_list is not None:
+            list_id = _safe_int(data_list)
+            list_name = _LIST_ID_TO_NAME.get(list_id)
+            if list_name:
+                classes = ctrl.get("class", [])
+                lists[list_name] = "active" in classes
+    return lists
 
 
 def extract_issue(li: Tag) -> dict[str, Any]:
@@ -67,6 +93,7 @@ def extract_issue(li: Tag) -> dict[str, Any]:
         "potw": potw,
         "community_rating": community,
         "url": f"{BASE_URL}{url}" if url else "",
+        "lists": _parse_list_membership(li),
     }
 
 
@@ -125,6 +152,29 @@ def extract_series(li: Tag) -> dict[str, Any]:
         "cover_url": cover_url,
         "url": f"{BASE_URL}{url}" if url else "",
     }
+
+
+def extract_comic_lists(soup: BeautifulSoup) -> dict[str, Any]:
+    """Extract only comic ID, name, and list membership from a comic detail page.
+
+    This is a lightweight alternative to :func:`extract_comic_detail` for
+    batch list-membership checks where we don't need full comic metadata.
+    """
+    result: dict[str, Any] = {}
+
+    # Title
+    h1 = soup.find("h1")
+    result["name"] = get_text_clean(h1)
+
+    # ID from canonical URL
+    canon = soup.find("link", rel="canonical")
+    if canon and canon.get("href"):
+        result["id"] = extract_id_from_href(canon["href"])
+
+    # List membership (user-specific, requires authentication)
+    result["lists"] = _parse_list_membership(soup)
+
+    return result
 
 
 def extract_comic_detail(soup: BeautifulSoup) -> dict[str, Any]:
@@ -230,5 +280,8 @@ def extract_comic_detail(soup: BeautifulSoup) -> dict[str, Any]:
             m = re.search(r"([\d,]+)\s*Rating", text)
             if m:
                 result["rating_count"] = int(m.group(1).replace(",", ""))
+
+    # List membership (user-specific, requires authentication)
+    result["lists"] = _parse_list_membership(soup)
 
     return result
