@@ -3,14 +3,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from typing import Any
 
 from locg import __version__
-from locg.client import AuthRequired, LOCGClient, set_debug
+from locg.client import AuthRequired, LOCGClient
 from locg.commands import (
     VALID_LISTS,
     cmd_add,
+    cmd_check_lists,
     cmd_collection,
     cmd_comic,
     cmd_login,
@@ -43,7 +45,8 @@ def create_parser() -> argparse.ArgumentParser:
     # Shared flags available on all subcommands
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
-    common.add_argument("--debug", action="store_true", help="Print HTTP debug info to stderr")
+    common.add_argument("-v", "--verbose", action="store_true", help="Verbose output (INFO level)")
+    common.add_argument("--debug", action="store_true", help="Debug output (DEBUG level, includes HTTP details)")
 
     parser = argparse.ArgumentParser(
         prog="locg",
@@ -71,16 +74,20 @@ def create_parser() -> argparse.ArgumentParser:
     p.add_argument("id", type=int, help="Series ID")
 
     # collection
-    sub.add_parser("collection", parents=[common], help="View your collection (requires login)")
+    p = sub.add_parser("collection", parents=[common], help="View your collection (requires login)")
+    p.add_argument("--title", help="Filter results by title (case-insensitive substring match)")
 
     # pull-list
-    sub.add_parser("pull-list", parents=[common], help="View your pull list (requires login)")
+    p = sub.add_parser("pull-list", parents=[common], help="View your pull list (requires login)")
+    p.add_argument("--title", help="Filter results by title (case-insensitive substring match)")
 
     # wish-list
-    sub.add_parser("wish-list", parents=[common], help="View your wish list (requires login)")
+    p = sub.add_parser("wish-list", parents=[common], help="View your wish list (requires login)")
+    p.add_argument("--title", help="Filter results by title (case-insensitive substring match)")
 
     # read-list
-    sub.add_parser("read-list", parents=[common], help="View your read list (requires login)")
+    p = sub.add_parser("read-list", parents=[common], help="View your read list (requires login)")
+    p.add_argument("--title", help="Filter results by title (case-insensitive substring match)")
 
     # add
     p = sub.add_parser("add", parents=[common], help="Add a comic to a list")
@@ -92,8 +99,14 @@ def create_parser() -> argparse.ArgumentParser:
     p.add_argument("list", choices=VALID_LISTS, help="Target list")
     p.add_argument("comic_id", type=int, help="Comic ID")
 
+    # check
+    p = sub.add_parser("check", parents=[common], help="Check which lists comics belong to (requires login)")
+    p.add_argument("comic_ids", type=int, nargs="+", help="One or more comic IDs")
+
     # login
-    sub.add_parser("login", parents=[common], help="Log in to League of Comic Geeks")
+    p = sub.add_parser("login", parents=[common], help="Log in to League of Comic Geeks")
+    p.add_argument("-u", "--username", help="Username (prompts if not provided)")
+    p.add_argument("-p", "--password", help="Password (prompts if not provided)")
 
     return parser
 
@@ -104,6 +117,7 @@ def main() -> None:
     raw = sys.argv[1:]
     pretty = "--pretty" in raw
     debug = "--debug" in raw
+    verbose = "--verbose" in raw or "-v" in raw
 
     parser = create_parser()
     args = parser.parse_args()
@@ -115,14 +129,27 @@ def main() -> None:
     # Use pre-scanned values (handles both `locg --pretty releases` and `locg releases --pretty`)
     args.pretty = pretty
     args.debug = debug
+    args.verbose = verbose
 
+    # Configure logging to stderr (keeps stdout clean for JSON)
     if args.debug:
-        set_debug(True)
+        level = logging.DEBUG
+    elif args.verbose:
+        level = logging.INFO
+    else:
+        level = logging.WARNING
+    logging.basicConfig(
+        level=level,
+        format="%(levelname)s: %(message)s",
+        stream=sys.stderr,
+    )
 
+    logger = logging.getLogger("locg")
     client = LOCGClient()
 
     try:
         result: Any = None
+        logger.info(f"Running command: {args.command}")
 
         if args.command == "search":
             result = cmd_search(client, args.query)
@@ -133,19 +160,21 @@ def main() -> None:
         elif args.command == "series":
             result = cmd_series(client, args.id)
         elif args.command == "collection":
-            result = cmd_collection(client)
+            result = cmd_collection(client, title=args.title)
         elif args.command == "pull-list":
-            result = cmd_pull_list(client)
+            result = cmd_pull_list(client, title=args.title)
         elif args.command == "wish-list":
-            result = cmd_wish_list(client)
+            result = cmd_wish_list(client, title=args.title)
         elif args.command == "read-list":
-            result = cmd_read_list(client)
+            result = cmd_read_list(client, title=args.title)
         elif args.command == "add":
             result = cmd_add(client, args.list, args.comic_id)
         elif args.command == "remove":
             result = cmd_remove(client, args.list, args.comic_id)
+        elif args.command == "check":
+            result = cmd_check_lists(client, args.comic_ids)
         elif args.command == "login":
-            result = cmd_login(client)
+            result = cmd_login(client, username=args.username, password=args.password)
 
         if result is not None:
             output(result, pretty=args.pretty)

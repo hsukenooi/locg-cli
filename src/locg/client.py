@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-import sys
+import logging
 import time
 from typing import Any, Optional
 from urllib.parse import urlencode
@@ -12,17 +12,8 @@ from curl_cffi import requests as cffi_requests
 from locg.config import cookie_path, ensure_config_dir
 
 BASE_URL = "https://leagueofcomicgeeks.com"
-_DEBUG = False
 
-
-def set_debug(enabled: bool) -> None:
-    global _DEBUG
-    _DEBUG = enabled
-
-
-def _debug(msg: str) -> None:
-    if _DEBUG:
-        print(f"[debug] {msg}", file=sys.stderr)
+logger = logging.getLogger("locg")
 
 
 class AuthRequired(Exception):
@@ -46,7 +37,7 @@ class LOCGClient:
             for name, value in cookies.items():
                 self._session.cookies.set(name, value, domain="leagueofcomicgeeks.com")
             self._cookies_loaded = True
-            _debug(f"Loaded {len(cookies)} cookies from {p}")
+            logger.debug(f"Loaded {len(cookies)} cookies from {p}")
 
     def _save_cookies(self) -> None:
         ensure_config_dir()
@@ -56,7 +47,7 @@ class LOCGClient:
             cookies[cookie.name] = cookie.value
         with open(p, "w") as f:
             json.dump(cookies, f, indent=2)
-        _debug(f"Saved {len(cookies)} cookies to {p}")
+        logger.debug(f"Saved {len(cookies)} cookies to {p}")
 
     @property
     def is_authenticated(self) -> bool:
@@ -73,23 +64,24 @@ class LOCGClient:
         url = f"{BASE_URL}{path}"
         if params:
             url = f"{url}?{urlencode(params, doseq=True)}"
-        _debug(f"GET {url}")
+        logger.debug(f"GET {url}")
         start = time.monotonic()
         resp = self._session.get(url, timeout=30)
         elapsed = time.monotonic() - start
-        _debug(f"  -> {resp.status_code} ({elapsed:.2f}s, {len(resp.content)} bytes)")
+        logger.debug(f"  -> {resp.status_code} ({elapsed:.2f}s, {len(resp.content)} bytes)")
         if resp.status_code == 429:
             retry_after = resp.headers.get("Retry-After", "60")
+            logger.warning(f"Rate limited on GET {url}, retry after {retry_after}s")
             raise Exception(f"Rate limited. Retry after {retry_after}s")
         return resp
 
     def post(self, path: str, data: Optional[dict[str, Any]] = None) -> cffi_requests.Response:
         url = f"{BASE_URL}{path}"
-        _debug(f"POST {url}")
+        logger.debug(f"POST {url}")
         start = time.monotonic()
         resp = self._session.post(url, data=data, timeout=30)
         elapsed = time.monotonic() - start
-        _debug(f"  -> {resp.status_code} ({elapsed:.2f}s)")
+        logger.debug(f"  -> {resp.status_code} ({elapsed:.2f}s)")
         self._save_cookies()
         return resp
 
@@ -116,17 +108,17 @@ class LOCGClient:
             "password": password,
         })
         if not self.is_authenticated:
-            _debug(f"Login failed: no ci_session cookie (status {resp.status_code})")
+            logger.debug(f"Login failed: no ci_session cookie (status {resp.status_code})")
             return False
 
         self._save_cookies()
 
         # Verify the session is actually valid server-side
         if not self.verify_session():
-            _debug("Login appeared to succeed but session is not valid server-side")
+            logger.debug("Login appeared to succeed but session is not valid server-side")
             return False
 
-        _debug("Login successful (verified)")
+        logger.debug("Login successful (verified)")
         return True
 
     def close(self) -> None:
