@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import getpass
+import logging
 from datetime import date, timedelta
 from typing import Any, Optional
 
@@ -10,6 +11,11 @@ from bs4 import BeautifulSoup
 from locg.client import AuthRequired, LOCGClient
 from locg.models import extract_comic_detail, extract_issue, extract_series
 from locg.parser import parse_list_response, parse_page
+
+logger = logging.getLogger("locg")
+
+# The LOCG API returns at most this many items per request.
+_PAGE_SIZE = 140
 
 # List ID mapping for add/remove operations
 LIST_IDS = {
@@ -116,38 +122,218 @@ def _check_session_valid(soup: BeautifulSoup) -> None:
         )
 
 
-def _get_user_list(client: LOCGClient, list_name: str, order: str = "alpha-asc") -> list[dict[str, Any]]:
-    """Fetch a user's list (collection, pull, wish, read)."""
-    client.require_auth()
-    resp = client.get("/comic/get_comics", params={
+def _filter_by_list_membership(
+    issues: list[dict[str, Any]],
+    list_name: str,
+) -> list[dict[str, Any]]:
+    """Filter issues to only those belonging to the requested list.
+
+    Works around an upstream LOCG API bug where the ``list`` query parameter
+    is silently ignored — ``GET /comic/get_comics?list=collection`` and
+    ``?list=wish`` return identical results containing ALL user comics.
+
+    Each issue's ``lists`` field (populated by :func:`models.extract_issue`)
+    contains a dict like ``{"pull": False, "collection": True, ...}``.
+    We keep only items where ``lists[list_name]`` is ``True``.
+
+    When ``lists`` is ``None`` (e.g. unauthenticated markup, though
+    ``_get_user_list`` already calls ``require_auth``), the item is kept
+    to avoid silently dropping data we cannot verify.
+
+    If the upstream API is ever fixed, every returned item will already
+    have the correct membership flag set, making this filter a no-op.
+    """
+    filtered: list[dict[str, Any]] = []
+    skipped = 0
+    for issue in issues:
+        membership = issue.get("lists")
+        if membership is None:
+            # Cannot determine membership — keep the item.
+            filtered.append(issue)
+            continue
+        if membership.get(list_name, False):
+            filtered.append(issue)
+        else:
+            skipped += 1
+    if skipped:
+        logger.debug(
+            "List membership filter %r: kept %d, removed %d of %d issues",
+            list_name, len(filtered), skipped, len(issues),
+        )
+    return filtered
+
+
+def _filter_by_title(issues: list[dict[str, Any]], title: str) -> list[dict[str, Any]]:
+    """Filter issues by case-insensitive substring match on the name field.
+
+    This exists as a workaround for an upstream LOCG API bug: when both
+    ``list`` and ``title`` params are sent to ``/comic/get_comics``, the
+    ``list`` param is silently ignored and results span all lists.  We
+    therefore fetch the full list first, then filter client-side.
+    """
+    needle = title.lower()
+    filtered = [issue for issue in issues if needle in issue.get("name", "").lower()]
+    logger.debug(
+        "Title filter %r: %d of %d issues matched",
+        title, len(filtered), len(issues),
+    )
+    return filtered
+
+
+def _fetch_user_list_page(
+    client: LOCGClient,
+    list_name: str,
+    order: str,
+    offset: int = 0,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Fetch a single page of a user's list starting at *offset*.
+
+    Returns ``(total_count, issues)`` where *total_count* is the server-
+    reported total and *issues* are the items in this page.
+    """
+    params: dict[str, Any] = {
         "list": list_name,
         "view": "thumbs",
         "order": order,
-    })
+    }
+    if offset > 0:
+        params["list_mode_offset"] = str(offset)
+    resp = client.get("/comic/get_comics", params=params)
     count, soup = parse_list_response(resp.text)
     _check_session_valid(soup)
     items = soup.find_all("li", class_="issue")
-    return [extract_issue(li) for li in items]
+    return count, [extract_issue(li) for li in items]
 
 
-def cmd_collection(client: LOCGClient) -> list[dict[str, Any]]:
+def _get_user_list(
+    client: LOCGClient,
+    list_name: str,
+    order: str = "alpha-asc",
+    title: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Fetch a user's list (collection, pull, wish, read).
+
+    Automatically paginates using ``list_mode_offset`` when the server
+    reports more items than a single response can carry (140-item cap).
+
+    If *title* is provided the full list is fetched and then filtered
+    client-side (see :func:`_filter_by_title` for rationale).
+    """
+    client.require_auth()
+
+    # First page (offset 0)
+    total_count, issues = _fetch_user_list_page(client, list_name, order)
+    logger.debug(
+        "List %r page 0: got %d items, server total %d",
+        list_name, len(issues), total_count,
+    )
+
+    # Track seen IDs for deduplication during pagination so we can
+    # detect when a speculative fetch yields no new items.
+    seen: set[int] = set()
+    for issue in issues:
+        seen.add(issue.get("id", 0))
+
+    # Determine whether more pages may exist.  The normal signal is
+    # offset < total_count, but the LOCG API sometimes lies: it
+    # reports count == _PAGE_SIZE (140) on every page regardless of
+    # the true total.  When we receive a full page AND the server
+    # reports count == _PAGE_SIZE, speculatively fetch the next page.
+    last_page_full = len(issues) == _PAGE_SIZE
+    offset = len(issues)
+
+    def _should_fetch_more() -> bool:
+        # Normal case: server honestly reports a higher total.
+        if offset < total_count and len(issues) < total_count:
+            return True
+        # Speculative case: server may be lying (count == _PAGE_SIZE
+        # on every page).  Keep going while pages are full.
+        if last_page_full and total_count == _PAGE_SIZE:
+            return True
+        return False
+
+    while _should_fetch_more():
+        page_count, page_issues = _fetch_user_list_page(
+            client, list_name, order, offset=offset,
+        )
+        logger.debug(
+            "List %r offset %d: got %d items",
+            list_name, offset, len(page_issues),
+        )
+        if not page_issues:
+            # Server returned no items — pagination not supported or
+            # we've exhausted the list.  Stop to avoid infinite loop.
+            logger.debug(
+                "List %r: empty page at offset %d, stopping pagination "
+                "(fetched %d of %d reported items)",
+                list_name, offset, len(issues), total_count,
+            )
+            break
+
+        # Count how many genuinely new items this page contributed.
+        new_count = 0
+        for issue in page_issues:
+            cid = issue.get("id", 0)
+            if cid not in seen:
+                seen.add(cid)
+                new_count += 1
+        issues.extend(page_issues)
+        offset += len(page_issues)
+        last_page_full = len(page_issues) == _PAGE_SIZE
+
+        if new_count == 0:
+            # Every item on this page was a duplicate — we've looped
+            # back to already-seen data, so stop.
+            logger.debug(
+                "List %r: page at offset %d had no new items, stopping",
+                list_name, offset,
+            )
+            break
+
+    # Deduplicate by comic ID while preserving order, in case the
+    # server returns overlapping results across pages.
+    seen_dedup: set[int] = set()
+    unique: list[dict[str, Any]] = []
+    for issue in issues:
+        cid = issue.get("id", 0)
+        if cid not in seen_dedup:
+            seen_dedup.add(cid)
+            unique.append(issue)
+    if len(unique) < len(issues):
+        logger.debug(
+            "List %r: removed %d duplicate items",
+            list_name, len(issues) - len(unique),
+        )
+    issues = unique
+
+    # Filter by list membership to work around the upstream API bug where
+    # the ``list`` parameter is silently ignored and all lists return
+    # identical results.  This must run before the title filter.
+    issues = _filter_by_list_membership(issues, list_name)
+
+    if title:
+        issues = _filter_by_title(issues, title)
+    return issues
+
+
+def cmd_collection(client: LOCGClient, title: Optional[str] = None) -> list[dict[str, Any]]:
     """Get the user's collection."""
-    return _get_user_list(client, "collection")
+    return _get_user_list(client, "collection", title=title)
 
 
-def cmd_pull_list(client: LOCGClient) -> list[dict[str, Any]]:
+def cmd_pull_list(client: LOCGClient, title: Optional[str] = None) -> list[dict[str, Any]]:
     """Get the user's pull list."""
-    return _get_user_list(client, "pull", order="date-asc")
+    return _get_user_list(client, "pull", order="date-asc", title=title)
 
 
-def cmd_wish_list(client: LOCGClient) -> list[dict[str, Any]]:
+def cmd_wish_list(client: LOCGClient, title: Optional[str] = None) -> list[dict[str, Any]]:
     """Get the user's wish list."""
-    return _get_user_list(client, "wish")
+    return _get_user_list(client, "wish", title=title)
 
 
-def cmd_read_list(client: LOCGClient) -> list[dict[str, Any]]:
+def cmd_read_list(client: LOCGClient, title: Optional[str] = None) -> list[dict[str, Any]]:
     """Get the user's read list."""
-    return _get_user_list(client, "read")
+    return _get_user_list(client, "read", title=title)
 
 
 def cmd_add(client: LOCGClient, list_name: str, comic_id: int) -> dict[str, Any]:
@@ -180,6 +366,34 @@ def cmd_remove(client: LOCGClient, list_name: str, comic_id: int) -> dict[str, A
         return resp.json()
     except Exception:
         return {"status": "ok" if resp.status_code == 200 else "error"}
+
+
+def cmd_check_lists(client: LOCGClient, comic_ids: list[int]) -> list[dict[str, Any]]:
+    """Check list membership for one or more comics.
+
+    Fetches each comic's detail page and extracts only the ID, name, and
+    list membership booleans.  This is lighter than :func:`cmd_comic` because
+    it skips parsing creators, description, scores, etc.
+
+    Requires authentication (list membership is user-specific).
+    """
+    from locg.models import extract_comic_lists
+
+    client.require_auth()
+    results: list[dict[str, Any]] = []
+    for comic_id in comic_ids:
+        logger.info("Checking lists for comic %d (%d/%d)", comic_id, len(results) + 1, len(comic_ids))
+        resp = client.get(f"/comic/{comic_id}/x")
+        if resp.status_code == 404:
+            results.append({"id": comic_id, "name": None, "lists": None, "error": "not found"})
+            continue
+        soup = parse_page(resp.text)
+        entry = extract_comic_lists(soup)
+        # Ensure the requested ID is always present (fallback if canonical URL parsing fails)
+        if "id" not in entry:
+            entry["id"] = comic_id
+        results.append(entry)
+    return results
 
 
 def cmd_login(client: LOCGClient, username: Optional[str] = None, password: Optional[str] = None) -> dict[str, Any]:
