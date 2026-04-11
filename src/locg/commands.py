@@ -5,7 +5,9 @@ import getpass
 from datetime import date, timedelta
 from typing import Any, Optional
 
-from locg.client import LOCGClient
+from bs4 import BeautifulSoup
+
+from locg.client import AuthRequired, LOCGClient
 from locg.models import extract_comic_detail, extract_issue, extract_series
 from locg.parser import parse_list_response, parse_page
 
@@ -101,6 +103,19 @@ def cmd_series(client: LOCGClient, series_id: int) -> dict[str, Any]:
     }
 
 
+def _check_session_valid(soup: BeautifulSoup) -> None:
+    """Raise AuthRequired if the API response indicates an anonymous session.
+
+    LOCG returns 200 even for expired sessions, but the HTML contains
+    data-user="0" when the user is not actually logged in.
+    """
+    tag = soup.find(attrs={"data-user": "0"})
+    if tag is not None:
+        raise AuthRequired(
+            "Session expired. Run: locg login"
+        )
+
+
 def _get_user_list(client: LOCGClient, list_name: str, order: str = "alpha-asc") -> list[dict[str, Any]]:
     """Fetch a user's list (collection, pull, wish, read)."""
     client.require_auth()
@@ -110,6 +125,7 @@ def _get_user_list(client: LOCGClient, list_name: str, order: str = "alpha-asc")
         "order": order,
     })
     count, soup = parse_list_response(resp.text)
+    _check_session_valid(soup)
     items = soup.find_all("li", class_="issue")
     return [extract_issue(li) for li in items]
 

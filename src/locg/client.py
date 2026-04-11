@@ -93,19 +93,41 @@ class LOCGClient:
         self._save_cookies()
         return resp
 
+    def verify_session(self) -> bool:
+        """Check if the current session is valid by making a lightweight request.
+
+        Returns True if the server recognizes us as a logged-in user.
+        """
+        from locg.parser import parse_list_response
+        resp = self.get("/comic/get_comics", params={
+            "list": "collection",
+            "view": "thumbs",
+        })
+        _count, soup = parse_list_response(resp.text)
+        tag = soup.find(attrs={"data-user": "0"})
+        is_valid = tag is None
+        _debug(f"Session verification: {'valid' if is_valid else 'invalid (data-user=0)'}")
+        return is_valid
+
     def login(self, username: str, password: str) -> bool:
         """Log in and persist the session cookie. Returns True on success."""
         resp = self.post("/login", data={
             "username": username,
             "password": password,
         })
-        success = self.is_authenticated
-        if success:
-            self._save_cookies()
-            _debug("Login successful")
-        else:
-            _debug(f"Login failed (status {resp.status_code})")
-        return success
+        if not self.is_authenticated:
+            _debug(f"Login failed: no ci_session cookie (status {resp.status_code})")
+            return False
+
+        self._save_cookies()
+
+        # Verify the session is actually valid server-side
+        if not self.verify_session():
+            _debug("Login appeared to succeed but session is not valid server-side")
+            return False
+
+        _debug("Login successful (verified)")
+        return True
 
     def close(self) -> None:
         self._session.close()

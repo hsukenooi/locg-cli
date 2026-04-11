@@ -65,6 +65,21 @@ def test_cmd_collection_without_auth_raises(mock_client):
         assert "Not logged in" in str(e)
 
 
+def test_cmd_collection_stale_session_raises(mock_client):
+    """When the API returns data-user="0", detect expired session."""
+    resp = MagicMock()
+    resp.text = json.dumps({
+        "count": 0,
+        "list": '<ul data-user="0"></ul>',
+    })
+    mock_client.get.return_value = resp
+    try:
+        cmd_collection(mock_client)
+        assert False, "Should have raised AuthRequired"
+    except AuthRequired as e:
+        assert "expired" in str(e).lower()
+
+
 def test_cmd_add_posts_correct_data(mock_client):
     resp = MagicMock()
     resp.json.return_value = {"status": "ok"}
