@@ -98,7 +98,7 @@ class LOCGClient:
         _count, soup = parse_list_response(resp.text)
         tag = soup.find(attrs={"data-user": "0"})
         is_valid = tag is None
-        _debug(f"Session verification: {'valid' if is_valid else 'invalid (data-user=0)'}")
+        logger.debug(f"Session verification: {'valid' if is_valid else 'invalid (data-user=0)'}")
         return is_valid
 
     def login(self, username: str, password: str) -> bool:
