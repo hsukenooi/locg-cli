@@ -15,6 +15,7 @@ from locg.commands import (
     cmd_add,
     cmd_check_lists,
     cmd_collection,
+    cmd_collection_has,
     cmd_pull_list,
     cmd_read_list,
     cmd_releases,

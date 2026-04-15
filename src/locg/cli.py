@@ -14,6 +14,7 @@ from locg.commands import (
     cmd_add,
     cmd_check_lists,
     cmd_collection,
+    cmd_collection_has,
     cmd_comic,
     cmd_login,
     cmd_pull_list,
@@ -33,8 +34,19 @@ def die(msg: str, code: int = 1) -> None:
     sys.exit(code)
 
 
-def output(data: Any, pretty: bool = False) -> None:
+def _filter_fields(data: Any, fields: list[str]) -> Any:
+    """Keep only the specified fields in dicts (or lists of dicts)."""
+    if isinstance(data, list):
+        return [_filter_fields(item, fields) for item in data]
+    if isinstance(data, dict):
+        return {k: v for k, v in data.items() if k in fields}
+    return data
+
+
+def output(data: Any, pretty: bool = False, fields: list[str] | None = None) -> None:
     """Print JSON data to stdout."""
+    if fields:
+        data = _filter_fields(data, fields)
     if pretty:
         print(json.dumps(data, indent=2, ensure_ascii=False))
     else:
@@ -47,6 +59,7 @@ def create_parser() -> argparse.ArgumentParser:
     common.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
     common.add_argument("-v", "--verbose", action="store_true", help="Verbose output (INFO level)")
     common.add_argument("--debug", action="store_true", help="Debug output (DEBUG level, includes HTTP details)")
+    common.add_argument("--fields", help="Comma-separated list of fields to include in output (e.g. --fields name,id)")
 
     parser = argparse.ArgumentParser(
         prog="locg",
@@ -73,9 +86,12 @@ def create_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("series", parents=[common], help="Get series details and issue list")
     p.add_argument("id", type=int, help="Series ID")
 
-    # collection
+    # collection (with 'has' subcommand)
     p = sub.add_parser("collection", parents=[common], help="View your collection (requires login)")
     p.add_argument("--title", help="Filter results by title (case-insensitive substring match)")
+    coll_sub = p.add_subparsers(dest="collection_command")
+    p_has = coll_sub.add_parser("has", parents=[common], help="Check if a title is in your collection (fast, avoids full fetch)")
+    p_has.add_argument("title_query", help="Title to search for (case-insensitive substring match)")
 
     # pull-list
     p = sub.add_parser("pull-list", parents=[common], help="View your pull list (requires login)")
@@ -131,6 +147,16 @@ def main() -> None:
     args.debug = debug
     args.verbose = verbose
 
+    # Pre-scan --fields (same reason as other flags above)
+    fields: list[str] | None = None
+    for i, arg in enumerate(raw):
+        if arg == "--fields" and i + 1 < len(raw):
+            fields = [f.strip() for f in raw[i + 1].split(",")]
+            break
+        elif arg.startswith("--fields="):
+            fields = [f.strip() for f in arg.split("=", 1)[1].split(",")]
+            break
+
     # Configure logging to stderr (keeps stdout clean for JSON)
     if args.debug:
         level = logging.DEBUG
@@ -160,7 +186,10 @@ def main() -> None:
         elif args.command == "series":
             result = cmd_series(client, args.id)
         elif args.command == "collection":
-            result = cmd_collection(client, title=args.title)
+            if getattr(args, "collection_command", None) == "has":
+                result = cmd_collection_has(client, args.title_query)
+            else:
+                result = cmd_collection(client, title=args.title)
         elif args.command == "pull-list":
             result = cmd_pull_list(client, title=args.title)
         elif args.command == "wish-list":
@@ -177,10 +206,10 @@ def main() -> None:
             result = cmd_login(client, username=args.username, password=args.password)
 
         if result is not None:
-            output(result, pretty=args.pretty)
+            output(result, pretty=args.pretty, fields=fields)
 
     except AuthRequired as e:
-        die(str(e), code=3)
+        die(str(e), code=1)
     except KeyboardInterrupt:
         sys.exit(130)
     except Exception as e:

@@ -321,6 +321,81 @@ def cmd_collection(client: LOCGClient, title: Optional[str] = None) -> list[dict
     return _get_user_list(client, "collection", title=title)
 
 
+def cmd_collection_has(client: LOCGClient, title_query: str) -> dict[str, Any]:
+    """Check if a title is in the user's collection without fetching everything.
+
+    Searches for matching comics via the search API, then checks list
+    membership for each match individually.  Much faster than fetching
+    the entire collection when you just need to know if one title is there.
+    """
+    from locg.models import extract_comic_lists
+
+    client.require_auth()
+
+    # Search for series matching the query
+    resp = client.get("/comic/get_comics", params={
+        "list": "search",
+        "list_option": "series",
+        "view": "thumbs",
+        "title": title_query,
+        "order": "alpha-asc",
+    })
+    count, soup = parse_list_response(resp.text)
+    series_items = soup.find_all("li")
+    series_list = [extract_series(s) for s in series_items]
+    logger.debug("Search for %r found %d series", title_query, len(series_list))
+
+    # For each series, fetch issues and find title matches
+    needle = title_query.lower()
+    matches: list[dict[str, Any]] = []
+
+    for series in series_list:
+        series_id = series.get("id")
+        if not series_id:
+            continue
+        resp = client.get("/comic/get_comics", params={
+            "list": "search",
+            "view": "thumbs",
+            "format[]": "1",
+            "series_id": str(series_id),
+            "order": "date-desc",
+        })
+        _, issue_soup = parse_list_response(resp.text)
+        issue_items = issue_soup.find_all("li", class_="issue")
+        for li in issue_items:
+            title_div = li.find("div", class_="title")
+            title_link = title_div.find("a") if title_div else None
+            name = title_link.get_text(strip=True) if title_link else ""
+            if needle in name.lower():
+                comic_id_raw = li.get("data-comic")
+                if comic_id_raw:
+                    comic_id = int(comic_id_raw)
+                    # Check list membership via detail page
+                    logger.info("Checking collection membership for %r (id=%d)", name, comic_id)
+                    detail_resp = client.get(f"/comic/{comic_id}/x")
+                    if detail_resp.status_code == 404:
+                        continue
+                    detail_soup = parse_page(detail_resp.text)
+                    entry = extract_comic_lists(detail_soup)
+                    if "id" not in entry:
+                        entry["id"] = comic_id
+                    in_collection = bool(
+                        entry.get("lists", {}).get("collection", False)
+                    )
+                    matches.append({
+                        "id": comic_id,
+                        "name": entry.get("name", name),
+                        "in_collection": in_collection,
+                        "lists": entry.get("lists"),
+                    })
+
+    return {
+        "query": title_query,
+        "matches": matches,
+        "found_in_collection": any(m["in_collection"] for m in matches),
+    }
+
+
 def cmd_pull_list(client: LOCGClient, title: Optional[str] = None) -> list[dict[str, Any]]:
     """Get the user's pull list."""
     return _get_user_list(client, "pull", order="date-asc", title=title)
