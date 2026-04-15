@@ -44,6 +44,12 @@ locg read-list
 # Filter by title (case-insensitive substring match)
 locg collection --title "batman"
 
+# Check if a title is in your collection (fast, no full fetch)
+locg collection has "Amazing Spider-Man #300"
+
+# Limit output fields (works on any command)
+locg collection --fields name,id
+
 # Add/remove a comic to/from a list (pull, collection, wish, read)
 locg add collection <comic_id>
 locg remove wish <comic_id>
@@ -88,7 +94,7 @@ src/locg/
 
 - Python 3.9+, type hints throughout, `from __future__ import annotations`
 - All output is JSON to stdout; errors are JSON to stderr
-- Exit codes: 0 success, 1 general error, 2 no command, 3 auth required, 4 unexpected error
+- Exit codes: 0 success, 1 general error / auth required, 2 no command, 4 unexpected error
 - No third-party CLI framework (just argparse)
 
 ## Testing
