@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 from unittest.mock import MagicMock, call
 
 from locg.client import AuthRequired
@@ -773,7 +774,6 @@ def test_validate_grade_accepts_cgc_scale():
 def test_validate_grade_rejects_invalid():
     """Non-CGC values raise ValueError with a clear message."""
     from locg.commands import _validate_grade
-    import pytest
     with pytest.raises(ValueError, match="Invalid grade"):
         _validate_grade("11.0")
     with pytest.raises(ValueError, match="Invalid grade"):
@@ -792,6 +792,19 @@ def test_validate_price_formats_cleanly():
 
 def test_validate_price_rejects_non_numeric():
     from locg.commands import _validate_price
-    import pytest
     with pytest.raises(ValueError, match="Invalid price"):
         _validate_price("free")
+
+
+def test_validate_price_rejects_negative():
+    from locg.commands import _validate_price
+    with pytest.raises(ValueError, match="non-negative"):
+        _validate_price("-5")
+
+
+def test_validate_price_rejects_non_finite():
+    from locg.commands import _validate_price
+    with pytest.raises(ValueError, match="finite"):
+        _validate_price("inf")
+    with pytest.raises(ValueError, match="finite"):
+        _validate_price("nan")

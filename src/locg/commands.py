@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import getpass
 import logging
+import math
 from datetime import date, timedelta
 from typing import Any, Optional
 
@@ -60,6 +61,10 @@ def _validate_price(value: str) -> str:
         f = float(value)
     except (ValueError, TypeError):
         raise ValueError(f"Invalid price {value!r}: must be numeric")
+    if not math.isfinite(f):
+        raise ValueError(f"Invalid price {value!r}: must be a finite number")
+    if f < 0:
+        raise ValueError(f"Invalid price {value!r}: must be non-negative")
     return f"{f:g}"
 
 
