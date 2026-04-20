@@ -10,7 +10,7 @@ from typing import Any, Optional
 from bs4 import BeautifulSoup
 
 from locg.client import AuthRequired, LOCGClient
-from locg.models import extract_comic_detail, extract_issue, extract_series
+from locg.models import extract_comic_detail, extract_comic_lists, extract_issue, extract_my_details, extract_series
 from locg.parser import parse_list_response, parse_page
 
 logger = logging.getLogger("locg")
@@ -368,8 +368,6 @@ def cmd_collection_has(client: LOCGClient, title_query: str) -> dict[str, Any]:
     membership for each match individually.  Much faster than fetching
     the entire collection when you just need to know if one title is there.
     """
-    from locg.models import extract_comic_lists
-
     client.require_auth()
 
     # Search for series matching the query
@@ -532,16 +530,27 @@ def cmd_update(
     we must fetch the current server state first, merge the user's flags on
     top, then POST the full dict.
     """
-    from locg.models import extract_comic_lists, extract_my_details
-
     client.require_auth()
 
     if grade is None and price is None and condition is None:
         return {"error": "update: at least one of --grade, --price, --condition is required"}
 
+    if grade is not None:
+        try:
+            grade = _validate_grade(grade)
+        except ValueError as e:
+            return {"error": str(e)}
+    if price is not None:
+        try:
+            price = _validate_price(price)
+        except ValueError as e:
+            return {"error": str(e)}
+
     resp = client.get(f"/comic/{comic_id}/x")
     if resp.status_code == 404:
         return {"error": f"Comic {comic_id} not found"}
+    if resp.status_code != 200:
+        return {"error": f"Unexpected HTTP {resp.status_code} fetching comic {comic_id}"}
 
     soup = parse_page(resp.text)
 
@@ -600,8 +609,6 @@ def cmd_check_lists(client: LOCGClient, comic_ids: list[int]) -> list[dict[str, 
 
     Requires authentication (list membership is user-specific).
     """
-    from locg.models import extract_comic_lists
-
     client.require_auth()
     results: list[dict[str, Any]] = []
     for comic_id in comic_ids:

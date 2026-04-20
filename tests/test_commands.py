@@ -994,3 +994,22 @@ def test_cmd_update_comic_not_found(mock_client):
     assert "error" in result
     assert "not found" in result["error"]
     mock_client.post.assert_not_called()
+
+
+def test_cmd_update_rejects_invalid_grade(mock_client):
+    """cmd_update must validate grade before making any network calls."""
+    result = cmd_update(mock_client, 12345, grade="11.0")
+    assert "error" in result
+    assert "Invalid grade" in result["error"]
+    mock_client.get.assert_not_called()
+
+
+def test_cmd_update_unexpected_http_error(mock_client):
+    get_resp = MagicMock()
+    get_resp.status_code = 500
+    mock_client.get.return_value = get_resp
+
+    result = cmd_update(mock_client, 12345, grade="8.5")
+    assert "error" in result
+    assert "500" in result["error"]
+    mock_client.post.assert_not_called()
