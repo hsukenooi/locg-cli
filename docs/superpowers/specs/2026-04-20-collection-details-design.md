@@ -90,10 +90,11 @@ Command changes (`commands.py`, new function `cmd_update`):
 1. Call `require_auth`.
 2. If none of `--grade`, `--price`, `--condition` was provided, `die("update: at least one of --grade, --price, --condition is required")` with exit 1.
 3. `GET /comic/<id>/x`. If 404, `die("Comic <id> not found")` with exit 1.
-4. Parse the `#my-details` tab via a new helper `extract_my_details(soup) -> dict` in `models.py`. The helper walks the tab's `<input>`, `<select>`, `<textarea>` tags and reads each name's **`data-initial`** attribute.
-5. Merge: overwrite `grading` / `price_paid` / `condition` with the supplied flag values. Flags not given leave the existing value in place.
-6. `POST /comic/post_my_details` with the merged dict.
-7. Return the server's JSON response.
+4. Parse list membership from the fetched page via the existing `extract_comic_lists` helper. If `collection` is not in the returned lists, `die("Comic <id> is not in your collection. Use: locg add collection <id>", code=1)`. This reuses the page we already fetched — zero extra HTTP cost. Rationale: `post_my_details` accepts any `comic_id` and returns success even for comics not in the user's collection, so without this check `update` would silently write orphan detail records.
+5. Parse the `#my-details` tab via a new helper `extract_my_details(soup) -> dict` in `models.py`. The helper walks the tab's `<input>`, `<select>`, `<textarea>` tags and reads each name's **`data-initial`** attribute.
+6. Merge: overwrite `grading` / `price_paid` / `condition` with the supplied flag values. Flags not given leave the existing value in place.
+7. `POST /comic/post_my_details` with the merged dict.
+8. Return the server's JSON response.
 
 Fields that `extract_my_details` must capture (these are the `post_my_details` form fields that hold per-user state and can be wiped by a partial POST):
 
@@ -115,7 +116,7 @@ Client changes (`client.py`):
 - `LOCGClient.__init__` initialises `self._server_auth_verified: Optional[bool] = None`.
 - `require_auth()` becomes:
   1. If no `ci_session` cookie → `raise AuthRequired("Not logged in. Run: locg login")`. (Unchanged.)
-  2. If `self._server_auth_verified is None`, call `self.verify_session()` and store the boolean.
+  2. If `self._server_auth_verified is None`, call `self.verify_session()`. Cache the boolean result (`True` or `False`) only when `verify_session` returns cleanly. If `verify_session` raises (HTTP 429, network error, malformed response), **do not cache** — let the exception propagate up to `cli.main`, which turns it into exit 4 via the generic `Exception` handler. Rationale: transient errors should not poison the cache; the next invocation should try again.
   3. If the cached result is `False` → `raise AuthRequired("Session expired. Run: locg login")`.
 - `login()` sets `self._server_auth_verified = True` on success. A fresh login does not need re-verification (login already calls `verify_session` internally).
 
@@ -126,7 +127,11 @@ Alternative considered and rejected: lazy check only before write commands. Woul
 ### Error-surfacing details
 
 - `AuthRequired` continues to exit code 1 via `cli.die(str(e), code=1)`.
-- `add` partial-success state (comic added, details failed): the top-level `output()` prints the JSON `{"status":"partial", ...}` to stdout, but `cli.main` checks for this sentinel and exits 1 so shell callers notice. (Concrete wiring: `cmd_add` returns the dict; `cli.main` inspects `result.get("status") == "partial"` after running the add branch and sets `sys.exit(1)`.)
+- `add` partial-success state (comic added, details failed):
+  - `cmd_add` returns the dict `{"status":"partial", "added": true, "details_saved": false, "details_error": "..."}`.
+  - `cli.main` prints the dict to stdout via `output()` (machine-readable JSON, unchanged pipeline for scripts), AND writes a short error line to stderr via `die`-style `{"error": "Comic added but details not saved: <details_error>"}`, then exits 1.
+  - Concrete wiring: after `output(result, ...)`, `cli.main` inspects `result.get("status") == "partial"`, writes the stderr error, and calls `sys.exit(1)`.
+  - Rationale: stdout stays machine-parseable (scripts get the full dict), stderr stays human-readable (standard UNIX split), exit 1 signals partial failure. No silent partial success, no lost structured data.
 
 ## Tests
 
@@ -139,6 +144,8 @@ Add unit tests that hit the parsers and command helpers with fixture HTML (no ne
 - `tests/test_commands.py::test_cmd_update_fetches_then_merges` — mocks `GET /comic/<id>/x` with the fixture and asserts the subsequent `post_my_details` body contains merged fields (user flag wins, other fields preserved from `data-initial`).
 - `tests/test_client.py::test_require_auth_verifies_once` — mocks the session GET to return valid markup, calls `require_auth` twice, asserts only one extra GET fired.
 - `tests/test_client.py::test_require_auth_expired_session` — mocks the session GET to return `data-user="0"` markup; asserts `AuthRequired("Session expired. Run: locg login")` is raised.
+- `tests/test_client.py::test_require_auth_does_not_cache_on_transient_error` — mocks `verify_session` to raise on the first call (simulating 429/network), asserts the exception propagates AND `_server_auth_verified` remains `None` so the next `require_auth` call will retry.
+- `tests/test_commands.py::test_cmd_update_rejects_non_collection_comic` — mocks `GET /comic/<id>/x` returning a page where `extract_comic_lists` yields no `collection` entry; asserts `cmd_update` calls `die` before any POST to `post_my_details` fires.
 
 ## Documentation
 
