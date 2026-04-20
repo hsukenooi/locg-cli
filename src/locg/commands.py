@@ -451,20 +451,73 @@ def cmd_read_list(client: LOCGClient, title: Optional[str] = None) -> list[dict[
     return _get_user_list(client, "read", title=title)
 
 
-def cmd_add(client: LOCGClient, list_name: str, comic_id: int) -> dict[str, Any]:
-    """Add a comic to a list."""
+def cmd_add(
+    client: LOCGClient,
+    list_name: str,
+    comic_id: int,
+    grade: Optional[str] = None,
+    price: Optional[str] = None,
+) -> dict[str, Any]:
+    """Add a comic to a list, optionally recording grade and price."""
     client.require_auth()
     if list_name not in LIST_IDS:
         return {"error": f"Invalid list '{list_name}'. Valid lists: {', '.join(VALID_LISTS)}"}
-    resp = client.post("/comic/my_list_move", data={
+
+    # grade/price only meaningful for collection
+    if (grade is not None or price is not None) and list_name != "collection":
+        return {"error": "--grade and --price are only valid when adding to collection"}
+
+    # Step 1: add to list
+    move_resp = client.post("/comic/my_list_move", data={
         "comic_id": comic_id,
         "list_id": LIST_IDS[list_name],
         "action_id": 1,
     })
     try:
-        return resp.json()
+        move_body = move_resp.json()
     except Exception:
-        return {"status": "ok" if resp.status_code == 200 else "error"}
+        move_body = {"status": "ok" if move_resp.status_code == 200 else "error"}
+
+    # If move failed, return unchanged — no point attempting details.
+    is_move_ok = (
+        move_body.get("status") == "ok"
+        or move_body.get("type") == "success"
+        or (move_resp.status_code == 200 and "error" not in move_body)
+    )
+    if not is_move_ok:
+        return move_body
+
+    # Step 2: if no details supplied, done.
+    if grade is None and price is None:
+        return move_body
+
+    # Step 3: POST details (minimum payload — comic is new, nothing to preserve).
+    payload: dict[str, Any] = {"comic_id": comic_id}
+    if grade is not None:
+        payload["grading"] = grade
+    if price is not None:
+        payload["price_paid"] = price
+
+    detail_resp = client.post("/comic/post_my_details", data=payload)
+    try:
+        detail_body = detail_resp.json()
+    except Exception:
+        detail_body = {"type": "error", "text": f"HTTP {detail_resp.status_code}"}
+
+    if detail_resp.status_code == 200 and detail_body.get("type") == "success":
+        return {
+            "status": "ok",
+            "added": True,
+            "details_saved": True,
+            "text": detail_body.get("text", "This comic has been updated."),
+        }
+
+    return {
+        "status": "partial",
+        "added": True,
+        "details_saved": False,
+        "details_error": detail_body.get("text", f"HTTP {detail_resp.status_code}"),
+    }
 
 
 def cmd_remove(client: LOCGClient, list_name: str, comic_id: int) -> dict[str, Any]:

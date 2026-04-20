@@ -808,3 +808,79 @@ def test_validate_price_rejects_non_finite():
         _validate_price("inf")
     with pytest.raises(ValueError, match="finite"):
         _validate_price("nan")
+
+
+def test_cmd_add_with_grade_and_price_calls_both_endpoints(mock_client):
+    """cmd_add with grade and price must POST both my_list_move then post_my_details."""
+    # First POST: my_list_move (success)
+    move_resp = MagicMock()
+    move_resp.json.return_value = {"status": "ok"}
+    move_resp.status_code = 200
+    # Second POST: post_my_details (success)
+    detail_resp = MagicMock()
+    detail_resp.json.return_value = {"type": "success", "text": "This comic has been updated."}
+    detail_resp.status_code = 200
+    mock_client.post.side_effect = [move_resp, detail_resp]
+
+    result = cmd_add(mock_client, "collection", 12345, grade="8.5", price="390")
+
+    # Two POSTs in order: move then details
+    assert mock_client.post.call_count == 2
+    first_call = mock_client.post.call_args_list[0]
+    assert first_call[0][0] == "/comic/my_list_move"
+    assert first_call[1]["data"] == {"comic_id": 12345, "list_id": 2, "action_id": 1}
+
+    second_call = mock_client.post.call_args_list[1]
+    assert second_call[0][0] == "/comic/post_my_details"
+    # Minimum payload: comic_id plus only the supplied fields
+    assert second_call[1]["data"] == {
+        "comic_id": 12345,
+        "grading": "8.5",
+        "price_paid": "390",
+    }
+
+    assert result == {
+        "status": "ok",
+        "added": True,
+        "details_saved": True,
+        "text": "This comic has been updated.",
+    }
+
+
+def test_cmd_add_details_failure_surfaces_partial(mock_client):
+    """If post_my_details fails after the comic is added, cmd_add returns partial."""
+    move_resp = MagicMock()
+    move_resp.json.return_value = {"status": "ok"}
+    move_resp.status_code = 200
+    detail_resp = MagicMock()
+    detail_resp.json.return_value = {"type": "error", "text": "Something went wrong."}
+    detail_resp.status_code = 500
+    mock_client.post.side_effect = [move_resp, detail_resp]
+
+    result = cmd_add(mock_client, "collection", 12345, grade="8.5")
+
+    assert result["status"] == "partial"
+    assert result["added"] is True
+    assert result["details_saved"] is False
+    assert "Something went wrong" in result["details_error"]
+
+
+def test_cmd_add_without_details_only_calls_move(mock_client):
+    """cmd_add without grade/price must behave exactly like the old version."""
+    move_resp = MagicMock()
+    move_resp.json.return_value = {"status": "ok"}
+    move_resp.status_code = 200
+    mock_client.post.return_value = move_resp
+
+    result = cmd_add(mock_client, "collection", 12345)
+
+    assert mock_client.post.call_count == 1
+    assert mock_client.post.call_args[0][0] == "/comic/my_list_move"
+    assert result == {"status": "ok"}
+
+
+def test_cmd_add_rejects_grade_on_non_collection(mock_client):
+    result = cmd_add(mock_client, "pull", 12345, grade="8.5")
+    assert "error" in result
+    assert "collection" in result["error"].lower()
+    mock_client.post.assert_not_called()
