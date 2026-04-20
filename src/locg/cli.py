@@ -11,6 +11,8 @@ from locg import __version__
 from locg.client import AuthRequired, LOCGClient
 from locg.commands import (
     VALID_LISTS,
+    _validate_grade,
+    _validate_price,
     cmd_add,
     cmd_check_lists,
     cmd_collection,
@@ -205,13 +207,11 @@ def main() -> None:
                 die("--grade and --price are only valid when adding to collection")
             if grade is not None:
                 try:
-                    from locg.commands import _validate_grade
                     grade = _validate_grade(grade)
                 except ValueError as e:
                     die(str(e))
             if price is not None:
                 try:
-                    from locg.commands import _validate_price
                     price = _validate_price(price)
                 except ValueError as e:
                     die(str(e))
