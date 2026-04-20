@@ -54,6 +54,12 @@ locg collection --fields name,id
 locg add collection <comic_id>
 locg remove wish <comic_id>
 
+# Add to collection with grade and price at the same time
+locg add collection <comic_id> --grade 8.5 --price 390
+
+# Update grade, price, or condition notes on a comic already in collection
+locg update <comic_id> --grade 9.2 --price 500 --condition "white pages"
+
 # Check which lists a comic belongs to (accepts multiple IDs)
 locg check <comic_id> [<comic_id> ...]
 ```
@@ -69,6 +75,7 @@ locg login -u <username> -p <password>
 ```
 
 Session cookies are stored at `~/.config/locg/cookies.json`. Sessions can expire server-side; if you get "Session expired", run `locg login` again.
+Every authenticated command now verifies the session server-side once per invocation (one extra GET). Expired sessions produce `{"error": "Session expired. Run: locg login"}` on stderr and exit 1.
 
 ## Architecture
 
