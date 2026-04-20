@@ -251,6 +251,12 @@ def main() -> None:
                 except ValueError as e:
                     die(str(e))
             result = cmd_update(client, args.id, grade=grade, price=price, condition=condition)
+            if isinstance(result, dict) and (
+                result.get("type") == "error"
+                or "error" in result
+            ):
+                output(result, pretty=args.pretty, fields=fields)
+                sys.exit(1)
         elif args.command == "check":
             result = cmd_check_lists(client, args.comic_ids)
         elif args.command == "login":

@@ -282,3 +282,21 @@ def test_cli_update_rejects_bogus_grade(monkeypatch, capsys):
     assert exc.value.code == 1
     captured = capsys.readouterr()
     assert "Invalid grade" in captured.err
+
+
+def test_cli_update_server_error_exits_1(monkeypatch, capsys):
+    """When cmd_update returns a server error, exit 1."""
+    from unittest.mock import MagicMock, patch
+
+    def fake_cmd_update(client, comic_id, grade=None, price=None, condition=None):
+        return {"type": "error", "text": "Something went wrong."}
+
+    monkeypatch.setattr("locg.cli.cmd_update", fake_cmd_update)
+    with patch("locg.cli.LOCGClient") as MockClient:
+        MockClient.return_value.close = MagicMock()
+        monkeypatch.setattr(sys, "argv", ["locg", "update", "12345", "--grade", "8.5"])
+        with pytest.raises(SystemExit) as exc:
+            main()
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "error" in captured.out  # still printed to stdout (machine-readable)
