@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import getpass
 import logging
+import math
 from datetime import date, timedelta
 from typing import Any, Optional
 
 from bs4 import BeautifulSoup
 
 from locg.client import AuthRequired, LOCGClient
-from locg.models import extract_comic_detail, extract_issue, extract_series
+from locg.models import extract_comic_detail, extract_comic_lists, extract_issue, extract_my_details, extract_series
 from locg.parser import parse_list_response, parse_page
 
 logger = logging.getLogger("locg")
@@ -26,6 +27,45 @@ LIST_IDS = {
 }
 
 VALID_LISTS = list(LIST_IDS.keys())
+
+# LOCG CGC scale values accepted by POST /comic/post_my_details.
+# "0" is an explicit "None" (no grade assigned); others match CGC's
+# official grade points.  Stored as strings because the server stores
+# and returns them as strings.
+VALID_GRADES = frozenset({
+    "0", "0.1", "0.3", "0.5", "1.0", "1.5", "1.8", "2.0", "2.5",
+    "3.0", "3.5", "4.0", "4.5", "5.0", "5.5", "6.0", "6.5",
+    "7.0", "7.5", "8.0", "8.5", "9.0", "9.2", "9.4", "9.6",
+    "9.8", "9.9", "10.0",
+})
+
+
+def _validate_grade(value: str) -> str:
+    """Return *value* if it is on the LOCG CGC scale, else raise ValueError."""
+    if value not in VALID_GRADES:
+        valid = ", ".join(sorted(VALID_GRADES, key=lambda s: float(s)))
+        raise ValueError(
+            f"Invalid grade {value!r}. Valid grades: {valid}"
+        )
+    return value
+
+
+def _validate_price(value: str) -> str:
+    """Coerce *value* via float(); return the canonical string form.
+
+    LOCG stores price_paid as a free-text string but truncates to two
+    decimal places in the UI.  We reformat with ``f"{float(v):g}"`` which
+    keeps integers tidy (``"390"`` not ``"390.0"``) and decimals readable.
+    """
+    try:
+        f = float(value)
+    except (ValueError, TypeError):
+        raise ValueError(f"Invalid price {value!r}: must be numeric")
+    if not math.isfinite(f):
+        raise ValueError(f"Invalid price {value!r}: must be a finite number")
+    if f < 0:
+        raise ValueError(f"Invalid price {value!r}: must be non-negative")
+    return f"{f:g}"
 
 
 def _get_week_date(target: Optional[str] = None) -> str:
@@ -328,8 +368,6 @@ def cmd_collection_has(client: LOCGClient, title_query: str) -> dict[str, Any]:
     membership for each match individually.  Much faster than fetching
     the entire collection when you just need to know if one title is there.
     """
-    from locg.models import extract_comic_lists
-
     client.require_auth()
 
     # Search for series matching the query
@@ -411,20 +449,139 @@ def cmd_read_list(client: LOCGClient, title: Optional[str] = None) -> list[dict[
     return _get_user_list(client, "read", title=title)
 
 
-def cmd_add(client: LOCGClient, list_name: str, comic_id: int) -> dict[str, Any]:
-    """Add a comic to a list."""
+def cmd_add(
+    client: LOCGClient,
+    list_name: str,
+    comic_id: int,
+    grade: Optional[str] = None,
+    price: Optional[str] = None,
+) -> dict[str, Any]:
+    """Add a comic to a list, optionally recording grade and price."""
     client.require_auth()
     if list_name not in LIST_IDS:
         return {"error": f"Invalid list '{list_name}'. Valid lists: {', '.join(VALID_LISTS)}"}
-    resp = client.post("/comic/my_list_move", data={
+
+    # grade/price only meaningful for collection
+    if (grade is not None or price is not None) and list_name != "collection":
+        return {"error": "--grade and --price are only valid when adding to collection"}
+
+    # Step 1: add to list
+    move_resp = client.post("/comic/my_list_move", data={
         "comic_id": comic_id,
         "list_id": LIST_IDS[list_name],
         "action_id": 1,
     })
     try:
-        return resp.json()
+        move_body = move_resp.json()
     except Exception:
-        return {"status": "ok" if resp.status_code == 200 else "error"}
+        move_body = {"status": "ok" if move_resp.status_code == 200 else "error"}
+
+    # If move failed, return unchanged — no point attempting details.
+    is_move_ok = (
+        move_body.get("status") == "ok"
+        or move_body.get("type") == "success"
+    )
+    if not is_move_ok:
+        return move_body
+
+    # Step 2: if no details supplied, done.
+    if grade is None and price is None:
+        return move_body
+
+    # Step 3: POST details (minimum payload — comic is new, nothing to preserve).
+    payload: dict[str, Any] = {"comic_id": comic_id}
+    if grade is not None:
+        payload["grading"] = grade
+    if price is not None:
+        payload["price_paid"] = price
+
+    detail_resp = client.post("/comic/post_my_details", data=payload)
+    try:
+        detail_body = detail_resp.json()
+    except Exception:
+        detail_body = {"type": "error", "text": f"HTTP {detail_resp.status_code}"}
+
+    if detail_resp.status_code == 200 and detail_body.get("type") == "success":
+        return {
+            "status": "ok",
+            "added": True,
+            "details_saved": True,
+            "text": detail_body.get("text", "This comic has been updated."),
+        }
+
+    return {
+        "status": "partial",
+        "added": True,
+        "details_saved": False,
+        "details_error": detail_body.get("text", f"HTTP {detail_resp.status_code}"),
+    }
+
+
+def cmd_update(
+    client: LOCGClient,
+    comic_id: int,
+    grade: Optional[str] = None,
+    price: Optional[str] = None,
+    condition: Optional[str] = None,
+) -> dict[str, Any]:
+    """Update grade / price / condition on a comic already in the user's collection.
+
+    Because POST /comic/post_my_details wipes any field it does not receive,
+    we must fetch the current server state first, merge the user's flags on
+    top, then POST the full dict.
+    """
+    client.require_auth()
+
+    if grade is None and price is None and condition is None:
+        return {"error": "update: at least one of --grade, --price, --condition is required"}
+
+    if grade is not None:
+        try:
+            grade = _validate_grade(grade)
+        except ValueError as e:
+            return {"error": str(e)}
+    if price is not None:
+        try:
+            price = _validate_price(price)
+        except ValueError as e:
+            return {"error": str(e)}
+
+    resp = client.get(f"/comic/{comic_id}/x")
+    if resp.status_code == 404:
+        return {"error": f"Comic {comic_id} not found"}
+    if resp.status_code != 200:
+        return {"error": f"Unexpected HTTP {resp.status_code} fetching comic {comic_id}"}
+
+    soup = parse_page(resp.text)
+
+    # Reject update on comics not in the user's collection.  The server
+    # accepts a POST for any comic_id and returns success, which would
+    # create orphan detail records.
+    entry = extract_comic_lists(soup)
+    lists = entry.get("lists") or {}
+    if not lists.get("collection"):
+        return {
+            "error": (
+                f"Comic {comic_id} is not in your collection. "
+                f"Use: locg add collection {comic_id}"
+            )
+        }
+
+    # Fetch current server state, merge flags on top.
+    payload = extract_my_details(soup)
+    if grade is not None:
+        payload["grading"] = grade
+    if price is not None:
+        payload["price_paid"] = price
+    if condition is not None:
+        payload["condition"] = condition
+
+    post_resp = client.post("/comic/post_my_details", data=payload)
+    try:
+        body = post_resp.json()
+    except Exception:
+        body = {"type": "error", "text": f"HTTP {post_resp.status_code}"}
+    return body
 
 
 def cmd_remove(client: LOCGClient, list_name: str, comic_id: int) -> dict[str, Any]:
@@ -452,8 +609,6 @@ def cmd_check_lists(client: LOCGClient, comic_ids: list[int]) -> list[dict[str, 
 
     Requires authentication (list membership is user-specific).
     """
-    from locg.models import extract_comic_lists
-
     client.require_auth()
     results: list[dict[str, Any]] = []
     for comic_id in comic_ids:

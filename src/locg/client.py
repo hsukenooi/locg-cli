@@ -27,6 +27,7 @@ class LOCGClient:
     def __init__(self) -> None:
         self._session = cffi_requests.Session(impersonate="chrome")
         self._cookies_loaded = False
+        self._server_auth_verified: Optional[bool] = None
         self._load_cookies()
 
     def _load_cookies(self) -> None:
@@ -59,6 +60,13 @@ class LOCGClient:
     def require_auth(self) -> None:
         if not self.is_authenticated:
             raise AuthRequired("Not logged in. Run: locg login")
+        if self._server_auth_verified is None:
+            # verify_session may raise (429, network, malformed response).
+            # Do NOT cache the result on failure — let the exception
+            # propagate so the next invocation retries.
+            self._server_auth_verified = self.verify_session()
+        if self._server_auth_verified is False:
+            raise AuthRequired("Session expired. Run: locg login")
 
     def get(self, path: str, params: Optional[dict[str, Any]] = None) -> cffi_requests.Response:
         url = f"{BASE_URL}{path}"
@@ -118,6 +126,7 @@ class LOCGClient:
             logger.debug("Login appeared to succeed but session is not valid server-side")
             return False
 
+        self._server_auth_verified = True
         logger.debug("Login successful (verified)")
         return True
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 from unittest.mock import MagicMock, call
 
 from locg.client import AuthRequired
@@ -21,6 +22,7 @@ from locg.commands import (
     cmd_releases,
     cmd_remove,
     cmd_search,
+    cmd_update,
     cmd_wish_list,
 )
 
@@ -758,3 +760,256 @@ def test_cmd_check_lists_empty_ids(mock_client):
     result = cmd_check_lists(mock_client, [])
     assert result == []
     mock_client.get.assert_not_called()
+
+
+def test_validate_grade_accepts_cgc_scale():
+    """All LOCG CGC grades must validate."""
+    from locg.commands import _validate_grade
+    for g in ("0", "0.1", "0.3", "0.5", "1.0", "1.5", "1.8", "2.0", "2.5",
+              "3.0", "3.5", "4.0", "4.5", "5.0", "5.5", "6.0", "6.5",
+              "7.0", "7.5", "8.0", "8.5", "9.0", "9.2", "9.4", "9.6",
+              "9.8", "9.9", "10.0"):
+        assert _validate_grade(g) == g
+
+
+def test_validate_grade_rejects_invalid():
+    """Non-CGC values raise ValueError with a clear message."""
+    from locg.commands import _validate_grade
+    with pytest.raises(ValueError, match="Invalid grade"):
+        _validate_grade("11.0")
+    with pytest.raises(ValueError, match="Invalid grade"):
+        _validate_grade("nine")
+    with pytest.raises(ValueError, match="Invalid grade"):
+        _validate_grade("9.3")  # not on LOCG's CGC scale
+
+
+def test_validate_price_formats_cleanly():
+    from locg.commands import _validate_price
+    assert _validate_price("390") == "390"
+    assert _validate_price("390.00") == "390"
+    assert _validate_price("9.99") == "9.99"
+    assert _validate_price("0") == "0"
+
+
+def test_validate_price_rejects_non_numeric():
+    from locg.commands import _validate_price
+    with pytest.raises(ValueError, match="Invalid price"):
+        _validate_price("free")
+
+
+def test_validate_price_rejects_negative():
+    from locg.commands import _validate_price
+    with pytest.raises(ValueError, match="non-negative"):
+        _validate_price("-5")
+
+
+def test_validate_price_rejects_non_finite():
+    from locg.commands import _validate_price
+    with pytest.raises(ValueError, match="finite"):
+        _validate_price("inf")
+    with pytest.raises(ValueError, match="finite"):
+        _validate_price("nan")
+
+
+def test_cmd_add_with_grade_and_price_calls_both_endpoints(mock_client):
+    """cmd_add with grade and price must POST both my_list_move then post_my_details."""
+    # First POST: my_list_move (success)
+    move_resp = MagicMock()
+    move_resp.json.return_value = {"status": "ok"}
+    move_resp.status_code = 200
+    # Second POST: post_my_details (success)
+    detail_resp = MagicMock()
+    detail_resp.json.return_value = {"type": "success", "text": "This comic has been updated."}
+    detail_resp.status_code = 200
+    mock_client.post.side_effect = [move_resp, detail_resp]
+
+    result = cmd_add(mock_client, "collection", 12345, grade="8.5", price="390")
+
+    # Two POSTs in order: move then details
+    assert mock_client.post.call_count == 2
+    first_call = mock_client.post.call_args_list[0]
+    assert first_call[0][0] == "/comic/my_list_move"
+    assert first_call[1]["data"] == {"comic_id": 12345, "list_id": 2, "action_id": 1}
+
+    second_call = mock_client.post.call_args_list[1]
+    assert second_call[0][0] == "/comic/post_my_details"
+    # Minimum payload: comic_id plus only the supplied fields
+    assert second_call[1]["data"] == {
+        "comic_id": 12345,
+        "grading": "8.5",
+        "price_paid": "390",
+    }
+
+    assert result == {
+        "status": "ok",
+        "added": True,
+        "details_saved": True,
+        "text": "This comic has been updated.",
+    }
+
+
+def test_cmd_add_details_failure_surfaces_partial(mock_client):
+    """If post_my_details fails after the comic is added, cmd_add returns partial."""
+    move_resp = MagicMock()
+    move_resp.json.return_value = {"status": "ok"}
+    move_resp.status_code = 200
+    detail_resp = MagicMock()
+    detail_resp.json.return_value = {"type": "error", "text": "Something went wrong."}
+    detail_resp.status_code = 500
+    mock_client.post.side_effect = [move_resp, detail_resp]
+
+    result = cmd_add(mock_client, "collection", 12345, grade="8.5")
+
+    assert result["status"] == "partial"
+    assert result["added"] is True
+    assert result["details_saved"] is False
+    assert "Something went wrong" in result["details_error"]
+
+
+def test_cmd_add_without_details_only_calls_move(mock_client):
+    """cmd_add without grade/price must behave exactly like the old version."""
+    move_resp = MagicMock()
+    move_resp.json.return_value = {"status": "ok"}
+    move_resp.status_code = 200
+    mock_client.post.return_value = move_resp
+
+    result = cmd_add(mock_client, "collection", 12345)
+
+    assert mock_client.post.call_count == 1
+    assert mock_client.post.call_args[0][0] == "/comic/my_list_move"
+    assert result == {"status": "ok"}
+
+
+def test_cmd_add_rejects_grade_on_non_collection(mock_client):
+    result = cmd_add(mock_client, "pull", 12345, grade="8.5")
+    assert "error" in result
+    assert "collection" in result["error"].lower()
+    mock_client.post.assert_not_called()
+
+
+def test_cmd_add_move_failure_http200_app_error_does_not_call_details(mock_client):
+    """If my_list_move returns HTTP 200 with type=error, details must not be called."""
+    move_resp = MagicMock()
+    move_resp.json.return_value = {"type": "error", "text": "Already in list."}
+    move_resp.status_code = 200
+    mock_client.post.return_value = move_resp
+
+    result = cmd_add(mock_client, "collection", 12345, grade="8.5")
+
+    # Only one POST — the move. Details must not be called.
+    assert mock_client.post.call_count == 1
+    assert result == {"type": "error", "text": "Already in list."}
+
+
+# --- cmd_update tests ---
+
+
+def test_cmd_update_fetches_then_merges(mock_client, comic_detail_my_details_html):
+    """cmd_update must fetch the page, parse data-initial, merge flags, then POST."""
+    # GET returns the detail page (collected version)
+    get_resp = MagicMock()
+    get_resp.status_code = 200
+    get_resp.text = comic_detail_my_details_html
+    mock_client.get.return_value = get_resp
+
+    # POST succeeds
+    post_resp = MagicMock()
+    post_resp.status_code = 200
+    post_resp.json.return_value = {"type": "success", "text": "Updated."}
+    mock_client.post.return_value = post_resp
+
+    result = cmd_update(mock_client, 6512949, grade="9.2", price="500", condition="pristine")
+
+    mock_client.get.assert_called_once_with("/comic/6512949/x")
+    assert mock_client.post.call_count == 1
+    post_call = mock_client.post.call_args
+    assert post_call[0][0] == "/comic/post_my_details"
+    payload = post_call[1]["data"]
+
+    # User's flags win
+    assert payload["grading"] == "9.2"
+    assert payload["price_paid"] == "500"
+    assert payload["condition"] == "pristine"
+
+    # Other fields preserved from data-initial
+    assert payload["comic_id"] == "6512949"
+    assert payload["date_purchased"] == "4/1/2026"
+    assert payload["media"] == "1"
+    assert payload["grading_company"] == "CGC"
+    assert payload["notes"] == "private note"
+    assert payload["storage_box"] == "Box A"
+
+    assert result == {"type": "success", "text": "Updated."}
+
+
+def test_cmd_update_only_condition_preserves_grade(mock_client, comic_detail_my_details_html):
+    """Supplying only --condition must leave grading untouched (from data-initial)."""
+    get_resp = MagicMock()
+    get_resp.status_code = 200
+    get_resp.text = comic_detail_my_details_html
+    mock_client.get.return_value = get_resp
+
+    post_resp = MagicMock()
+    post_resp.status_code = 200
+    post_resp.json.return_value = {"type": "success", "text": "Updated."}
+    mock_client.post.return_value = post_resp
+
+    cmd_update(mock_client, 6512949, condition="new note")
+
+    payload = mock_client.post.call_args[1]["data"]
+    assert payload["condition"] == "new note"
+    assert payload["grading"] == "8.5"  # preserved from data-initial
+    assert payload["price_paid"] == "99.99"  # preserved
+
+
+def test_cmd_update_rejects_non_collection_comic(
+    mock_client, comic_detail_my_details_not_collected_html
+):
+    get_resp = MagicMock()
+    get_resp.status_code = 200
+    get_resp.text = comic_detail_my_details_not_collected_html
+    mock_client.get.return_value = get_resp
+
+    result = cmd_update(mock_client, 6512949, grade="8.5")
+
+    assert "error" in result
+    assert "not in your collection" in result["error"]
+    mock_client.post.assert_not_called()
+
+
+def test_cmd_update_no_flags_errors(mock_client):
+    result = cmd_update(mock_client, 12345)
+
+    assert "error" in result
+    assert "at least one" in result["error"]
+    mock_client.get.assert_not_called()
+
+
+def test_cmd_update_comic_not_found(mock_client):
+    get_resp = MagicMock()
+    get_resp.status_code = 404
+    mock_client.get.return_value = get_resp
+
+    result = cmd_update(mock_client, 99999, grade="8.5")
+    assert "error" in result
+    assert "not found" in result["error"]
+    mock_client.post.assert_not_called()
+
+
+def test_cmd_update_rejects_invalid_grade(mock_client):
+    """cmd_update must validate grade before making any network calls."""
+    result = cmd_update(mock_client, 12345, grade="11.0")
+    assert "error" in result
+    assert "Invalid grade" in result["error"]
+    mock_client.get.assert_not_called()
+
+
+def test_cmd_update_unexpected_http_error(mock_client):
+    get_resp = MagicMock()
+    get_resp.status_code = 500
+    mock_client.get.return_value = get_resp
+
+    result = cmd_update(mock_client, 12345, grade="8.5")
+    assert "error" in result
+    assert "500" in result["error"]
+    mock_client.post.assert_not_called()

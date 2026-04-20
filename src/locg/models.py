@@ -285,3 +285,47 @@ def extract_comic_detail(soup: BeautifulSoup) -> dict[str, Any]:
     result["lists"] = _parse_list_membership(soup)
 
     return result
+
+
+# Fields from the #my-details tab that POST /comic/post_my_details will
+# accept. Missing fields on the POST get wiped to server defaults, so
+# extract_my_details captures every one we want to round-trip.
+_MY_DETAILS_FIELDS = (
+    "comic_id", "copy_num", "quantity", "date_purchased", "price_paid",
+    "purchase_store", "media", "signature", "storage_box", "slabbing",
+    "grading", "grading_company", "condition", "notes", "owner",
+)
+
+
+def extract_my_details(soup: BeautifulSoup) -> dict[str, str]:
+    """Extract the currently-stored My Details form values from a comic page.
+
+    Reads the ``data-initial`` attribute on each named form field in the
+    ``#my-details`` tab. The HTML template bakes in defaults
+    (e.g. the ``grading`` select always marks "None" as selected regardless
+    of true state), so the visible ``value``/``selected`` markup is unreliable.
+    Only ``data-initial`` reflects the stored server state.
+
+    Missing fields are returned as empty strings so that a subsequent
+    round-trip POST does not inadvertently wipe them.
+    """
+    container = soup.find(id="my-details")
+    if container is None:
+        return {field: "" for field in _MY_DETAILS_FIELDS}
+
+    result: dict[str, str] = {}
+    for field in _MY_DETAILS_FIELDS:
+        tag = container.find(attrs={"name": field})
+        if tag is None:
+            result[field] = ""
+            continue
+        # data-initial wins. Fall back to value (for <input>) or text (for
+        # <textarea>) only when data-initial is entirely absent.
+        initial = tag.get("data-initial")
+        if initial is None:
+            if tag.name == "textarea":
+                initial = tag.get_text()
+            else:
+                initial = tag.get("value", "")
+        result[field] = initial
+    return result

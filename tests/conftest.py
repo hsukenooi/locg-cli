@@ -40,6 +40,18 @@ def comic_detail_html():
 
 
 @pytest.fixture
+def comic_detail_my_details_html():
+    with open(FIXTURES / "comic_detail_my_details.html") as f:
+        return f.read()
+
+
+@pytest.fixture
+def comic_detail_my_details_not_collected_html():
+    with open(FIXTURES / "comic_detail_my_details_not_collected.html") as f:
+        return f.read()
+
+
+@pytest.fixture
 def mock_client():
     """A mock LOCGClient with get/post as MagicMocks."""
     client = MagicMock()

@@ -20,7 +20,7 @@ pip install -e ".[test]"
 
 ## Authentication
 
-Some commands (collection, pull-list, wish-list, read-list, add, remove) require a League of Comic Geeks account.
+Some commands (collection, pull-list, wish-list, read-list, add, remove, update) require a League of Comic Geeks account.
 
 ```bash
 locg login
@@ -48,6 +48,15 @@ locg releases
 locg releases --date 2026-04-02 --pretty
 ```
 
+### check
+
+Check which lists a comic belongs to. Accepts one or more comic IDs (requires login).
+
+```bash
+locg check 9559460
+locg check 9559460 8823401 --pretty
+```
+
 ### comic
 
 Get full details for a specific comic by ID (publisher, price, creators, description, etc.).
@@ -68,10 +77,12 @@ locg series 149498 --pretty
 
 ### collection
 
-View your collected comics (requires login).
+View your collected comics (requires login). Filter by title with `--title`. Check if a specific title is in your collection with `has`.
 
 ```bash
 locg collection --pretty
+locg collection --title "batman" --pretty
+locg collection has "Amazing Spider-Man #300"
 ```
 
 ### pull-list
@@ -100,12 +111,15 @@ locg read-list --pretty
 
 ### add
 
-Add a comic to a list (requires login). Lists: `pull`, `collection`, `wish`, `read`.
+Add a comic to a list (requires login). Lists: `pull`, `collection`, `wish`, `read`. When adding to `collection`, optionally record grade and price in the same step.
 
 ```bash
 locg add collection 9559460
 locg add pull 9559460
+locg add collection 9559460 --grade 8.5 --price 390
 ```
+
+`--grade` accepts CGC scale values: `0`, `0.1`, `0.3`, `0.5`, `1.0` ... `9.8`, `9.9`, `10.0`. Only valid for `collection`.
 
 ### remove
 
@@ -114,6 +128,16 @@ Remove a comic from a list (requires login). Lists: `pull`, `collection`, `wish`
 ```bash
 locg remove collection 9559460
 locg remove wish 9559460
+```
+
+### update
+
+Update grade, price, or condition notes on a comic already in your collection (requires login). At least one flag is required.
+
+```bash
+locg update 9559460 --grade 9.2
+locg update 9559460 --price 500 --condition "white pages"
+locg update 9559460 --grade 9.8 --price 450 --condition "off-white pages"
 ```
 
 ### login
@@ -129,6 +153,7 @@ locg login
 | Flag | Description |
 |------|-------------|
 | `--pretty` | Pretty-print JSON output with indentation |
+| `--fields name,id` | Limit output to specific fields (works on any command) |
 | `--debug` | Print HTTP request/response debug info to stderr |
 | `--version` | Show version and exit |
 

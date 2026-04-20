@@ -11,6 +11,8 @@ from locg import __version__
 from locg.client import AuthRequired, LOCGClient
 from locg.commands import (
     VALID_LISTS,
+    _validate_grade,
+    _validate_price,
     cmd_add,
     cmd_check_lists,
     cmd_collection,
@@ -23,6 +25,7 @@ from locg.commands import (
     cmd_remove,
     cmd_search,
     cmd_series,
+    cmd_update,
     cmd_wish_list,
 )
 
@@ -109,11 +112,20 @@ def create_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("add", parents=[common], help="Add a comic to a list")
     p.add_argument("list", choices=VALID_LISTS, help="Target list")
     p.add_argument("comic_id", type=int, help="Comic ID")
+    p.add_argument("--grade", help="LOCG CGC grade (collection only, e.g. 8.5, 9.2, 9.8)")
+    p.add_argument("--price", help="Purchase price (collection only, numeric)")
 
     # remove
     p = sub.add_parser("remove", parents=[common], help="Remove a comic from a list")
     p.add_argument("list", choices=VALID_LISTS, help="Target list")
     p.add_argument("comic_id", type=int, help="Comic ID")
+
+    # update
+    p = sub.add_parser("update", parents=[common], help="Update grade/price/condition on a comic in your collection")
+    p.add_argument("id", type=int, help="Comic ID")
+    p.add_argument("--grade", help="LOCG CGC grade (e.g. 8.5, 9.2, 9.8)")
+    p.add_argument("--price", help="Purchase price (numeric)")
+    p.add_argument("--condition", help="Free-text condition notes")
 
     # check
     p = sub.add_parser("check", parents=[common], help="Check which lists comics belong to (requires login)")
@@ -197,9 +209,54 @@ def main() -> None:
         elif args.command == "read-list":
             result = cmd_read_list(client, title=args.title)
         elif args.command == "add":
-            result = cmd_add(client, args.list, args.comic_id)
+            grade = getattr(args, "grade", None)
+            price = getattr(args, "price", None)
+            if (grade is not None or price is not None) and args.list != "collection":
+                die("--grade and --price are only valid when adding to collection")
+            if grade is not None:
+                try:
+                    grade = _validate_grade(grade)
+                except ValueError as e:
+                    die(str(e))
+            if price is not None:
+                try:
+                    price = _validate_price(price)
+                except ValueError as e:
+                    die(str(e))
+            result = cmd_add(client, args.list, args.comic_id, grade=grade, price=price)
+            if isinstance(result, dict) and result.get("status") == "partial":
+                output(result, pretty=args.pretty, fields=fields)
+                json.dump(
+                    {"error": f"Comic added but details not saved: {result.get('details_error', 'unknown')}"},
+                    sys.stderr,
+                )
+                print(file=sys.stderr)
+                sys.exit(1)
         elif args.command == "remove":
             result = cmd_remove(client, args.list, args.comic_id)
+        elif args.command == "update":
+            grade = getattr(args, "grade", None)
+            price = getattr(args, "price", None)
+            condition = getattr(args, "condition", None)
+            if grade is None and price is None and condition is None:
+                die("update: at least one of --grade, --price, --condition is required")
+            if grade is not None:
+                try:
+                    grade = _validate_grade(grade)
+                except ValueError as e:
+                    die(str(e))
+            if price is not None:
+                try:
+                    price = _validate_price(price)
+                except ValueError as e:
+                    die(str(e))
+            result = cmd_update(client, args.id, grade=grade, price=price, condition=condition)
+            if isinstance(result, dict) and (
+                result.get("type") == "error"
+                or "error" in result
+            ):
+                output(result, pretty=args.pretty, fields=fields)
+                sys.exit(1)
         elif args.command == "check":
             result = cmd_check_lists(client, args.comic_ids)
         elif args.command == "login":

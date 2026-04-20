@@ -166,3 +166,137 @@ def test_auth_failure_exits_1(monkeypatch, capsys):
     captured = capsys.readouterr()
     err = json.loads(captured.err)
     assert "expired" in err["error"].lower()
+
+
+def test_cli_add_collection_with_grade_and_price(monkeypatch, capsys):
+    """`locg add collection <id> --grade 8.5 --price 390` must call cmd_add with those values."""
+    from unittest.mock import MagicMock, patch
+    calls = {}
+
+    def fake_cmd_add(client, list_name, comic_id, grade=None, price=None):
+        calls["args"] = (list_name, comic_id, grade, price)
+        return {"status": "ok", "added": True, "details_saved": True, "text": "done"}
+
+    monkeypatch.setattr("locg.cli.cmd_add", fake_cmd_add)
+    with patch("locg.cli.LOCGClient") as MockClient:
+        MockClient.return_value.__enter__ = MockClient.return_value
+        MockClient.return_value.close = MagicMock()
+        monkeypatch.setattr(sys, "argv", ["locg", "add", "collection", "12345", "--grade", "8.5", "--price", "390"])
+        try:
+            main()
+        except SystemExit as e:
+            assert e.code in (None, 0)
+
+    assert calls["args"] == ("collection", 12345, "8.5", "390")
+
+
+def test_cli_add_partial_success_exits_1(monkeypatch, capsys):
+    """Partial success must write JSON to stdout AND error JSON to stderr AND exit 1."""
+    from unittest.mock import MagicMock, patch
+
+    def fake_cmd_add(client, list_name, comic_id, grade=None, price=None):
+        return {
+            "status": "partial",
+            "added": True,
+            "details_saved": False,
+            "details_error": "Server rejected grade",
+        }
+
+    monkeypatch.setattr("locg.cli.cmd_add", fake_cmd_add)
+    with patch("locg.cli.LOCGClient") as MockClient:
+        MockClient.return_value.close = MagicMock()
+        monkeypatch.setattr(sys, "argv", ["locg", "add", "collection", "12345", "--grade", "8.5"])
+        with pytest.raises(SystemExit) as exc:
+            main()
+    assert exc.value.code == 1
+
+    captured = capsys.readouterr()
+    assert "partial" in captured.out
+    assert "details_error" in captured.out
+    assert "Server rejected grade" in captured.err
+    assert "Comic added but details not saved" in captured.err
+
+
+def test_cli_add_rejects_bogus_grade(monkeypatch, capsys):
+    from unittest.mock import patch
+    with patch("locg.cli.LOCGClient"):
+        monkeypatch.setattr(sys, "argv", ["locg", "add", "collection", "12345", "--grade", "11.0"])
+        with pytest.raises(SystemExit) as exc:
+            main()
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "Invalid grade" in captured.err
+
+
+def test_cli_add_rejects_grade_on_non_collection_list(monkeypatch, capsys):
+    from unittest.mock import patch
+    with patch("locg.cli.LOCGClient"):
+        monkeypatch.setattr(sys, "argv", ["locg", "add", "pull", "12345", "--grade", "8.5"])
+        with pytest.raises(SystemExit) as exc:
+            main()
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "collection" in captured.err.lower()
+
+
+def test_cli_update_passes_all_flags(monkeypatch, capsys):
+    from unittest.mock import MagicMock, patch
+    calls = {}
+
+    def fake_cmd_update(client, comic_id, grade=None, price=None, condition=None):
+        calls["args"] = (comic_id, grade, price, condition)
+        return {"type": "success", "text": "ok"}
+
+    monkeypatch.setattr("locg.cli.cmd_update", fake_cmd_update)
+    with patch("locg.cli.LOCGClient") as MockClient:
+        MockClient.return_value.close = MagicMock()
+        monkeypatch.setattr(sys, "argv", [
+            "locg", "update", "12345",
+            "--grade", "8.5", "--price", "390", "--condition", "white pages",
+        ])
+        try:
+            main()
+        except SystemExit as e:
+            assert e.code in (None, 0)
+
+    assert calls["args"] == (12345, "8.5", "390", "white pages")
+
+
+def test_cli_update_requires_at_least_one_flag(monkeypatch, capsys):
+    from unittest.mock import patch
+    with patch("locg.cli.LOCGClient"):
+        monkeypatch.setattr(sys, "argv", ["locg", "update", "12345"])
+        with pytest.raises(SystemExit) as exc:
+            main()
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "at least one" in captured.err.lower()
+
+
+def test_cli_update_rejects_bogus_grade(monkeypatch, capsys):
+    from unittest.mock import patch
+    with patch("locg.cli.LOCGClient"):
+        monkeypatch.setattr(sys, "argv", ["locg", "update", "12345", "--grade", "11.0"])
+        with pytest.raises(SystemExit) as exc:
+            main()
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "Invalid grade" in captured.err
+
+
+def test_cli_update_server_error_exits_1(monkeypatch, capsys):
+    """When cmd_update returns a server error, exit 1."""
+    from unittest.mock import MagicMock, patch
+
+    def fake_cmd_update(client, comic_id, grade=None, price=None, condition=None):
+        return {"type": "error", "text": "Something went wrong."}
+
+    monkeypatch.setattr("locg.cli.cmd_update", fake_cmd_update)
+    with patch("locg.cli.LOCGClient") as MockClient:
+        MockClient.return_value.close = MagicMock()
+        monkeypatch.setattr(sys, "argv", ["locg", "update", "12345", "--grade", "8.5"])
+        with pytest.raises(SystemExit) as exc:
+            main()
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "error" in captured.out  # still printed to stdout (machine-readable)

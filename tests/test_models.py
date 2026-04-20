@@ -5,7 +5,7 @@ import json
 
 from bs4 import BeautifulSoup
 
-from locg.models import _safe_int, extract_comic_detail, extract_comic_lists, extract_issue, extract_series
+from locg.models import _safe_int, extract_comic_detail, extract_comic_lists, extract_issue, extract_my_details, extract_series
 
 
 def test_extract_issue_from_fixture(releases_json):
@@ -346,3 +346,41 @@ def test_extract_comic_lists_unauthenticated():
     assert result["id"] == 123
     assert result["name"] == "Test Comic"
     assert result["lists"] is None
+
+
+# --- extract_my_details tests ---
+
+
+def test_extract_my_details_reads_data_initial(comic_detail_my_details_html):
+    """extract_my_details must read data-initial attributes, NOT value or selected."""
+    soup = BeautifulSoup(comic_detail_my_details_html, "html.parser")
+    details = extract_my_details(soup)
+
+    # Populated fields
+    assert details["comic_id"] == "6512949"
+    assert details["price_paid"] == "99.99"
+    assert details["condition"] == "white pages"
+    assert details["grading"] == "8.5"
+    assert details["grading_company"] == "CGC"
+    assert details["media"] == "1"  # select with data-initial
+    assert details["slabbing"] == "0"
+    assert details["notes"] == "private note"
+    assert details["owner"] == "me"
+    assert details["storage_box"] == "Box A"
+    assert details["purchase_store"] == "LCS"
+    assert details["date_purchased"] == "4/1/2026"
+    assert details["copy_num"] == "1"
+    assert details["quantity"] == "1"
+    assert details["signature"] == ""
+
+
+def test_extract_my_details_ignores_visible_selected_markup(comic_detail_my_details_html):
+    """The HTML template marks 'None' as selected even when data-initial is 8.5.
+    extract_my_details must trust data-initial, not <option selected>."""
+    soup = BeautifulSoup(comic_detail_my_details_html, "html.parser")
+    details = extract_my_details(soup)
+
+    # If the parser incorrectly read <option selected>, grading would be "0".
+    # The correct value (from data-initial on the <select>) is "8.5".
+    assert details["grading"] != "0"
+    assert details["grading"] == "8.5"
