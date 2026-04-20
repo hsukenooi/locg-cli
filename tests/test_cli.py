@@ -237,3 +237,48 @@ def test_cli_add_rejects_grade_on_non_collection_list(monkeypatch, capsys):
     assert exc.value.code == 1
     captured = capsys.readouterr()
     assert "collection" in captured.err.lower()
+
+
+def test_cli_update_passes_all_flags(monkeypatch, capsys):
+    from unittest.mock import MagicMock, patch
+    calls = {}
+
+    def fake_cmd_update(client, comic_id, grade=None, price=None, condition=None):
+        calls["args"] = (comic_id, grade, price, condition)
+        return {"type": "success", "text": "ok"}
+
+    monkeypatch.setattr("locg.cli.cmd_update", fake_cmd_update, raising=False)
+    with patch("locg.cli.LOCGClient") as MockClient:
+        MockClient.return_value.close = MagicMock()
+        monkeypatch.setattr(sys, "argv", [
+            "locg", "update", "12345",
+            "--grade", "8.5", "--price", "390", "--condition", "white pages",
+        ])
+        try:
+            main()
+        except SystemExit as e:
+            assert e.code in (None, 0)
+
+    assert calls["args"] == (12345, "8.5", "390", "white pages")
+
+
+def test_cli_update_requires_at_least_one_flag(monkeypatch, capsys):
+    from unittest.mock import patch
+    with patch("locg.cli.LOCGClient"):
+        monkeypatch.setattr(sys, "argv", ["locg", "update", "12345"])
+        with pytest.raises(SystemExit) as exc:
+            main()
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "at least one" in captured.err.lower()
+
+
+def test_cli_update_rejects_bogus_grade(monkeypatch, capsys):
+    from unittest.mock import patch
+    with patch("locg.cli.LOCGClient"):
+        monkeypatch.setattr(sys, "argv", ["locg", "update", "12345", "--grade", "11.0"])
+        with pytest.raises(SystemExit) as exc:
+            main()
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "Invalid grade" in captured.err
