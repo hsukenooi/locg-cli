@@ -884,3 +884,17 @@ def test_cmd_add_rejects_grade_on_non_collection(mock_client):
     assert "error" in result
     assert "collection" in result["error"].lower()
     mock_client.post.assert_not_called()
+
+
+def test_cmd_add_move_failure_http200_app_error_does_not_call_details(mock_client):
+    """If my_list_move returns HTTP 200 with type=error, details must not be called."""
+    move_resp = MagicMock()
+    move_resp.json.return_value = {"type": "error", "text": "Already in list."}
+    move_resp.status_code = 200
+    mock_client.post.return_value = move_resp
+
+    result = cmd_add(mock_client, "collection", 12345, grade="8.5")
+
+    # Only one POST — the move. Details must not be called.
+    assert mock_client.post.call_count == 1
+    assert result == {"type": "error", "text": "Already in list."}

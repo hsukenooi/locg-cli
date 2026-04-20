@@ -482,7 +482,6 @@ def cmd_add(
     is_move_ok = (
         move_body.get("status") == "ok"
         or move_body.get("type") == "success"
-        or (move_resp.status_code == 200 and "error" not in move_body)
     )
     if not is_move_ok:
         return move_body
