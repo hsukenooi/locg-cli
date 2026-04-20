@@ -22,6 +22,7 @@ from locg.commands import (
     cmd_releases,
     cmd_remove,
     cmd_search,
+    cmd_update,
     cmd_wish_list,
 )
 
@@ -898,3 +899,98 @@ def test_cmd_add_move_failure_http200_app_error_does_not_call_details(mock_clien
     # Only one POST — the move. Details must not be called.
     assert mock_client.post.call_count == 1
     assert result == {"type": "error", "text": "Already in list."}
+
+
+# --- cmd_update tests ---
+
+
+def test_cmd_update_fetches_then_merges(mock_client, comic_detail_my_details_html):
+    """cmd_update must fetch the page, parse data-initial, merge flags, then POST."""
+    # GET returns the detail page (collected version)
+    get_resp = MagicMock()
+    get_resp.status_code = 200
+    get_resp.text = comic_detail_my_details_html
+    mock_client.get.return_value = get_resp
+
+    # POST succeeds
+    post_resp = MagicMock()
+    post_resp.status_code = 200
+    post_resp.json.return_value = {"type": "success", "text": "Updated."}
+    mock_client.post.return_value = post_resp
+
+    result = cmd_update(mock_client, 6512949, grade="9.2", price="500", condition="pristine")
+
+    mock_client.get.assert_called_once_with("/comic/6512949/x")
+    assert mock_client.post.call_count == 1
+    post_call = mock_client.post.call_args
+    assert post_call[0][0] == "/comic/post_my_details"
+    payload = post_call[1]["data"]
+
+    # User's flags win
+    assert payload["grading"] == "9.2"
+    assert payload["price_paid"] == "500"
+    assert payload["condition"] == "pristine"
+
+    # Other fields preserved from data-initial
+    assert payload["comic_id"] == "6512949"
+    assert payload["date_purchased"] == "4/1/2026"
+    assert payload["media"] == "1"
+    assert payload["grading_company"] == "CGC"
+    assert payload["notes"] == "private note"
+    assert payload["storage_box"] == "Box A"
+
+    assert result == {"type": "success", "text": "Updated."}
+
+
+def test_cmd_update_only_condition_preserves_grade(mock_client, comic_detail_my_details_html):
+    """Supplying only --condition must leave grading untouched (from data-initial)."""
+    get_resp = MagicMock()
+    get_resp.status_code = 200
+    get_resp.text = comic_detail_my_details_html
+    mock_client.get.return_value = get_resp
+
+    post_resp = MagicMock()
+    post_resp.status_code = 200
+    post_resp.json.return_value = {"type": "success", "text": "Updated."}
+    mock_client.post.return_value = post_resp
+
+    cmd_update(mock_client, 6512949, condition="new note")
+
+    payload = mock_client.post.call_args[1]["data"]
+    assert payload["condition"] == "new note"
+    assert payload["grading"] == "8.5"  # preserved from data-initial
+    assert payload["price_paid"] == "99.99"  # preserved
+
+
+def test_cmd_update_rejects_non_collection_comic(
+    mock_client, comic_detail_my_details_not_collected_html
+):
+    get_resp = MagicMock()
+    get_resp.status_code = 200
+    get_resp.text = comic_detail_my_details_not_collected_html
+    mock_client.get.return_value = get_resp
+
+    result = cmd_update(mock_client, 6512949, grade="8.5")
+
+    assert "error" in result
+    assert "not in your collection" in result["error"]
+    mock_client.post.assert_not_called()
+
+
+def test_cmd_update_no_flags_errors(mock_client):
+    result = cmd_update(mock_client, 12345)
+
+    assert "error" in result
+    assert "at least one" in result["error"]
+    mock_client.get.assert_not_called()
+
+
+def test_cmd_update_comic_not_found(mock_client):
+    get_resp = MagicMock()
+    get_resp.status_code = 404
+    mock_client.get.return_value = get_resp
+
+    result = cmd_update(mock_client, 99999, grade="8.5")
+    assert "error" in result
+    assert "not found" in result["error"]
+    mock_client.post.assert_not_called()

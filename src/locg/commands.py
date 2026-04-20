@@ -519,6 +519,62 @@ def cmd_add(
     }
 
 
+def cmd_update(
+    client: LOCGClient,
+    comic_id: int,
+    grade: Optional[str] = None,
+    price: Optional[str] = None,
+    condition: Optional[str] = None,
+) -> dict[str, Any]:
+    """Update grade / price / condition on a comic already in the user's collection.
+
+    Because POST /comic/post_my_details wipes any field it does not receive,
+    we must fetch the current server state first, merge the user's flags on
+    top, then POST the full dict.
+    """
+    from locg.models import extract_comic_lists, extract_my_details
+
+    client.require_auth()
+
+    if grade is None and price is None and condition is None:
+        return {"error": "update: at least one of --grade, --price, --condition is required"}
+
+    resp = client.get(f"/comic/{comic_id}/x")
+    if resp.status_code == 404:
+        return {"error": f"Comic {comic_id} not found"}
+
+    soup = parse_page(resp.text)
+
+    # Reject update on comics not in the user's collection.  The server
+    # accepts a POST for any comic_id and returns success, which would
+    # create orphan detail records.
+    entry = extract_comic_lists(soup)
+    lists = entry.get("lists") or {}
+    if not lists.get("collection"):
+        return {
+            "error": (
+                f"Comic {comic_id} is not in your collection. "
+                f"Use: locg add collection {comic_id}"
+            )
+        }
+
+    # Fetch current server state, merge flags on top.
+    payload = extract_my_details(soup)
+    if grade is not None:
+        payload["grading"] = grade
+    if price is not None:
+        payload["price_paid"] = price
+    if condition is not None:
+        payload["condition"] = condition
+
+    post_resp = client.post("/comic/post_my_details", data=payload)
+    try:
+        body = post_resp.json()
+    except Exception:
+        body = {"type": "error", "text": f"HTTP {post_resp.status_code}"}
+    return body
+
+
 def cmd_remove(client: LOCGClient, list_name: str, comic_id: int) -> dict[str, Any]:
     """Remove a comic from a list."""
     client.require_auth()
