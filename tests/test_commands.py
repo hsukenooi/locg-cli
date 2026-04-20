@@ -758,3 +758,40 @@ def test_cmd_check_lists_empty_ids(mock_client):
     result = cmd_check_lists(mock_client, [])
     assert result == []
     mock_client.get.assert_not_called()
+
+
+def test_validate_grade_accepts_cgc_scale():
+    """All LOCG CGC grades must validate."""
+    from locg.commands import _validate_grade
+    for g in ("0", "0.1", "0.3", "0.5", "1.0", "1.5", "1.8", "2.0", "2.5",
+              "3.0", "3.5", "4.0", "4.5", "5.0", "5.5", "6.0", "6.5",
+              "7.0", "7.5", "8.0", "8.5", "9.0", "9.2", "9.4", "9.6",
+              "9.8", "9.9", "10.0"):
+        assert _validate_grade(g) == g
+
+
+def test_validate_grade_rejects_invalid():
+    """Non-CGC values raise ValueError with a clear message."""
+    from locg.commands import _validate_grade
+    import pytest
+    with pytest.raises(ValueError, match="Invalid grade"):
+        _validate_grade("11.0")
+    with pytest.raises(ValueError, match="Invalid grade"):
+        _validate_grade("nine")
+    with pytest.raises(ValueError, match="Invalid grade"):
+        _validate_grade("9.3")  # not on LOCG's CGC scale
+
+
+def test_validate_price_formats_cleanly():
+    from locg.commands import _validate_price
+    assert _validate_price("390") == "390"
+    assert _validate_price("390.00") == "390"
+    assert _validate_price("9.99") == "9.99"
+    assert _validate_price("0") == "0"
+
+
+def test_validate_price_rejects_non_numeric():
+    from locg.commands import _validate_price
+    import pytest
+    with pytest.raises(ValueError, match="Invalid price"):
+        _validate_price("free")

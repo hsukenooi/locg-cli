@@ -27,6 +27,41 @@ LIST_IDS = {
 
 VALID_LISTS = list(LIST_IDS.keys())
 
+# LOCG CGC scale values accepted by POST /comic/post_my_details.
+# "0" is an explicit "None" (no grade assigned); others match CGC's
+# official grade points.  Stored as strings because the server stores
+# and returns them as strings.
+VALID_GRADES = frozenset({
+    "0", "0.1", "0.3", "0.5", "1.0", "1.5", "1.8", "2.0", "2.5",
+    "3.0", "3.5", "4.0", "4.5", "5.0", "5.5", "6.0", "6.5",
+    "7.0", "7.5", "8.0", "8.5", "9.0", "9.2", "9.4", "9.6",
+    "9.8", "9.9", "10.0",
+})
+
+
+def _validate_grade(value: str) -> str:
+    """Return *value* if it is on the LOCG CGC scale, else raise ValueError."""
+    if value not in VALID_GRADES:
+        valid = ", ".join(sorted(VALID_GRADES, key=lambda s: float(s)))
+        raise ValueError(
+            f"Invalid grade {value!r}. Valid grades: {valid}"
+        )
+    return value
+
+
+def _validate_price(value: str) -> str:
+    """Coerce *value* via float(); return the canonical string form.
+
+    LOCG stores price_paid as a free-text string but truncates to two
+    decimal places in the UI.  We reformat with ``f"{float(v):g}"`` which
+    keeps integers tidy (``"390"`` not ``"390.0"``) and decimals readable.
+    """
+    try:
+        f = float(value)
+    except (ValueError, TypeError):
+        raise ValueError(f"Invalid price {value!r}: must be numeric")
+    return f"{f:g}"
+
 
 def _get_week_date(target: Optional[str] = None) -> str:
     """Return the date formatted as M/D/YYYY for LOCG API.
