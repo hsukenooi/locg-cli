@@ -109,6 +109,8 @@ def create_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("add", parents=[common], help="Add a comic to a list")
     p.add_argument("list", choices=VALID_LISTS, help="Target list")
     p.add_argument("comic_id", type=int, help="Comic ID")
+    p.add_argument("--grade", help="LOCG CGC grade (collection only, e.g. 8.5, 9.2, 9.8)")
+    p.add_argument("--price", help="Purchase price (collection only, numeric)")
 
     # remove
     p = sub.add_parser("remove", parents=[common], help="Remove a comic from a list")
@@ -197,7 +199,31 @@ def main() -> None:
         elif args.command == "read-list":
             result = cmd_read_list(client, title=args.title)
         elif args.command == "add":
-            result = cmd_add(client, args.list, args.comic_id)
+            grade = getattr(args, "grade", None)
+            price = getattr(args, "price", None)
+            if (grade is not None or price is not None) and args.list != "collection":
+                die("--grade and --price are only valid when adding to collection")
+            if grade is not None:
+                try:
+                    from locg.commands import _validate_grade
+                    grade = _validate_grade(grade)
+                except ValueError as e:
+                    die(str(e))
+            if price is not None:
+                try:
+                    from locg.commands import _validate_price
+                    price = _validate_price(price)
+                except ValueError as e:
+                    die(str(e))
+            result = cmd_add(client, args.list, args.comic_id, grade=grade, price=price)
+            if isinstance(result, dict) and result.get("status") == "partial":
+                output(result, pretty=args.pretty, fields=fields)
+                json.dump(
+                    {"error": f"Comic added but details not saved: {result.get('details_error', 'unknown')}"},
+                    sys.stderr,
+                )
+                print(file=sys.stderr)
+                sys.exit(1)
         elif args.command == "remove":
             result = cmd_remove(client, args.list, args.comic_id)
         elif args.command == "check":
