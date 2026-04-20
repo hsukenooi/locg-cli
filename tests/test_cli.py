@@ -247,7 +247,7 @@ def test_cli_update_passes_all_flags(monkeypatch, capsys):
         calls["args"] = (comic_id, grade, price, condition)
         return {"type": "success", "text": "ok"}
 
-    monkeypatch.setattr("locg.cli.cmd_update", fake_cmd_update, raising=False)
+    monkeypatch.setattr("locg.cli.cmd_update", fake_cmd_update)
     with patch("locg.cli.LOCGClient") as MockClient:
         MockClient.return_value.close = MagicMock()
         monkeypatch.setattr(sys, "argv", [
