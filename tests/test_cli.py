@@ -10,6 +10,42 @@ from locg import __version__
 from locg.cli import _filter_fields, create_parser, main
 
 
+def test_main_loads_dotenv_before_client(monkeypatch, capsys):
+    """main() must call load_dotenv() before constructing LOCGClient so
+    LOCG_USERNAME/LOCG_PASSWORD from a .env file are available during
+    require_auth(). If ordering slipped (e.g. load_dotenv moved after
+    client construction), auto-login would silently fail."""
+    import locg.cli
+
+    order: list[str] = []
+
+    def fake_load_dotenv(*args, **kwargs):
+        order.append("load_dotenv")
+
+    class FakeClient:
+        def __init__(self):
+            order.append("LOCGClient")
+        def close(self):
+            order.append("close")
+
+    monkeypatch.setattr(locg.cli, "load_dotenv", fake_load_dotenv)
+    monkeypatch.setattr(locg.cli, "LOCGClient", FakeClient)
+    # Use a real command (not bare `locg`) so main() reaches client construction.
+    monkeypatch.setattr(sys, "argv", ["locg", "search", "batman"])
+
+    # cmd_search would make real HTTP; stub it.
+    monkeypatch.setattr(locg.cli, "cmd_search", lambda client, q: [])
+
+    try:
+        main()
+    except SystemExit as e:
+        assert e.code in (None, 0)
+
+    assert order[:2] == ["load_dotenv", "LOCGClient"], (
+        f"load_dotenv must run before LOCGClient() — got {order}"
+    )
+
+
 def test_no_args_prints_help_exits_2(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["locg"])
     with pytest.raises(SystemExit) as exc_info:

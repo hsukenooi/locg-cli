@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from typing import Any, Optional
 from urllib.parse import urlencode
@@ -59,6 +60,8 @@ class LOCGClient:
 
     def require_auth(self) -> None:
         if not self.is_authenticated:
+            if self._try_env_login():
+                return
             raise AuthRequired("Not logged in. Run: locg login")
         if self._server_auth_verified is None:
             # verify_session may raise (429, network, malformed response).
@@ -66,7 +69,41 @@ class LOCGClient:
             # propagate so the next invocation retries.
             self._server_auth_verified = self.verify_session()
         if self._server_auth_verified is False:
+            if self._try_env_login():
+                return
             raise AuthRequired("Session expired. Run: locg login")
+
+    def _try_env_login(self) -> bool:
+        """Attempt auto-login using LOCG_USERNAME/LOCG_PASSWORD from the environment.
+
+        Returns True if login succeeded, False if credentials are missing or
+        the login failed. Callers treat False as "fall back to raising AuthRequired".
+
+        Exceptions from login() (rate limits, network errors) are caught and
+        logged so callers see a clean AuthRequired rather than a raw traceback
+        propagating to exit code 4.
+        """
+        username = os.environ.get("LOCG_USERNAME")
+        password = os.environ.get("LOCG_PASSWORD")
+        if not username or not password:
+            return False
+        logger.debug("Attempting auto-login from LOCG_USERNAME/LOCG_PASSWORD")
+        try:
+            ok = self.login(username, password)
+        except Exception as e:
+            logger.warning("Auto-login failed: %s", e)
+            return False
+        if ok:
+            # login() sets _server_auth_verified internally, but make the
+            # post-condition explicit so require_auth's early-return paths
+            # don't depend on that side effect.
+            self._server_auth_verified = True
+        else:
+            logger.warning(
+                "Auto-login rejected by server. "
+                "Check LOCG_USERNAME / LOCG_PASSWORD."
+            )
+        return ok
 
     def get(self, path: str, params: Optional[dict[str, Any]] = None) -> cffi_requests.Response:
         url = f"{BASE_URL}{path}"

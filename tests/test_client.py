@@ -36,8 +36,10 @@ def test_require_auth_verifies_once():
     assert client.verify_session.call_count == 1
 
 
-def test_require_auth_expired_session_raises():
+def test_require_auth_expired_session_raises(monkeypatch):
     """If verify_session returns False, require_auth should raise AuthRequired."""
+    monkeypatch.delenv("LOCG_USERNAME", raising=False)
+    monkeypatch.delenv("LOCG_PASSWORD", raising=False)
     client = _make_client_with_session()
     client.verify_session = MagicMock(return_value=False)
 
@@ -45,8 +47,10 @@ def test_require_auth_expired_session_raises():
         client.require_auth()
 
 
-def test_require_auth_no_cookie_raises():
+def test_require_auth_no_cookie_raises(monkeypatch):
     """Without a ci_session cookie, require_auth raises before verify_session."""
+    monkeypatch.delenv("LOCG_USERNAME", raising=False)
+    monkeypatch.delenv("LOCG_PASSWORD", raising=False)
     client = _make_client_with_session(ci_session=None)
     client.verify_session = MagicMock(return_value=True)
 
@@ -81,6 +85,103 @@ def test_require_auth_does_not_cache_on_transient_error():
     client.require_auth()
     assert call_count["n"] == 2
     assert client._server_auth_verified is True
+
+
+def test_require_auth_expired_triggers_env_auto_login(monkeypatch):
+    """Expired session with LOCG_USERNAME/LOCG_PASSWORD in env should auto-login."""
+    client = _make_client_with_session()
+    client.verify_session = MagicMock(return_value=False)
+    client.login = MagicMock(return_value=True)
+
+    monkeypatch.setenv("LOCG_USERNAME", "user")
+    monkeypatch.setenv("LOCG_PASSWORD", "pass")
+
+    client.require_auth()  # should NOT raise
+    client.login.assert_called_once_with("user", "pass")
+
+
+def test_require_auth_expired_no_env_still_raises(monkeypatch):
+    """Without env creds, expired session still raises AuthRequired."""
+    client = _make_client_with_session()
+    client.verify_session = MagicMock(return_value=False)
+    client.login = MagicMock(return_value=True)
+
+    monkeypatch.delenv("LOCG_USERNAME", raising=False)
+    monkeypatch.delenv("LOCG_PASSWORD", raising=False)
+
+    with pytest.raises(AuthRequired, match="Session expired"):
+        client.require_auth()
+    client.login.assert_not_called()
+
+
+def test_require_auth_auto_login_failure_raises(monkeypatch):
+    """If env creds are set but login fails, still raise AuthRequired."""
+    client = _make_client_with_session()
+    client.verify_session = MagicMock(return_value=False)
+    client.login = MagicMock(return_value=False)  # login fails
+
+    monkeypatch.setenv("LOCG_USERNAME", "user")
+    monkeypatch.setenv("LOCG_PASSWORD", "wrong")
+
+    with pytest.raises(AuthRequired, match="Session expired"):
+        client.require_auth()
+    client.login.assert_called_once_with("user", "wrong")
+
+
+def test_require_auth_no_cookie_triggers_env_auto_login(monkeypatch):
+    """Missing ci_session cookie should also attempt auto-login when env creds set."""
+    client = _make_client_with_session(ci_session=None)
+    client.login = MagicMock(return_value=True)
+
+    monkeypatch.setenv("LOCG_USERNAME", "user")
+    monkeypatch.setenv("LOCG_PASSWORD", "pass")
+
+    client.require_auth()
+    client.login.assert_called_once_with("user", "pass")
+
+
+def test_require_auth_env_login_swallows_exception(monkeypatch):
+    """A rate-limit or network error during auto-login must surface as
+    AuthRequired — never as a raw exception — so the CLI produces a clean
+    exit-1 auth error instead of an exit-4 unexpected error."""
+    client = _make_client_with_session()
+    client.verify_session = MagicMock(return_value=False)
+    client.login = MagicMock(side_effect=Exception("Rate limited. Retry after 60s"))
+
+    monkeypatch.setenv("LOCG_USERNAME", "user")
+    monkeypatch.setenv("LOCG_PASSWORD", "pass")
+
+    with pytest.raises(AuthRequired, match="Session expired"):
+        client.require_auth()
+
+
+def test_require_auth_env_login_sets_verified_flag(monkeypatch):
+    """After a successful env auto-login, _server_auth_verified must be True
+    so the next require_auth() skips verify_session. The invariant cannot
+    rely on login()'s internal side effects because tests (and future
+    refactors) may bypass them."""
+    client = _make_client_with_session(ci_session=None)
+    client.login = MagicMock(return_value=True)
+
+    monkeypatch.setenv("LOCG_USERNAME", "user")
+    monkeypatch.setenv("LOCG_PASSWORD", "pass")
+
+    client.require_auth()
+    assert client._server_auth_verified is True
+
+
+def test_require_auth_partial_env_does_not_login(monkeypatch):
+    """Only one of LOCG_USERNAME/LOCG_PASSWORD set — no auto-login attempt."""
+    client = _make_client_with_session()
+    client.verify_session = MagicMock(return_value=False)
+    client.login = MagicMock(return_value=True)
+
+    monkeypatch.setenv("LOCG_USERNAME", "user")
+    monkeypatch.delenv("LOCG_PASSWORD", raising=False)
+
+    with pytest.raises(AuthRequired, match="Session expired"):
+        client.require_auth()
+    client.login.assert_not_called()
 
 
 def test_login_success_primes_verified_cache():
