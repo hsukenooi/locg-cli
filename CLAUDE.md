@@ -75,7 +75,19 @@ locg login -u <username> -p <password>
 ```
 
 Session cookies are stored at `~/.config/locg/cookies.json`. Sessions can expire server-side; if you get "Session expired", run `locg login` again.
-Every authenticated command now verifies the session server-side once per invocation (one extra GET). Expired sessions produce `{"error": "Session expired. Run: locg login"}` on stderr and exit 1.
+Every authenticated command verifies the session server-side once per invocation (one extra GET). Expired sessions produce `{"error": "Session expired. Run: locg login"}` on stderr and exit 1.
+
+#### Auto-login from `.env`
+
+If `LOCG_USERNAME` and `LOCG_PASSWORD` are set in the environment (or in `~/.config/locg/.env`, which is loaded at startup), an expired or missing session triggers an automatic login using those credentials before any error is raised. The `.env` path is fixed — it is not discovered via cwd walk — so behavior is deterministic regardless of where `locg` is invoked from.
+
+```
+# ~/.config/locg/.env
+LOCG_USERNAME=your_username
+LOCG_PASSWORD=your_password
+```
+
+If auto-login fails (wrong credentials, rate limit, network error) the command still exits 1 with the standard `Session expired` / `Not logged in` JSON error; the failure reason is logged at warning level (visible with `--verbose`).
 
 ## Architecture
 
@@ -114,4 +126,5 @@ PYTHONPATH=src python3 -m pytest tests/ -v
 
 - `curl-cffi` — HTTP client with browser impersonation (Cloudflare bypass)
 - `beautifulsoup4` — HTML parsing
+- `python-dotenv` — load `~/.config/locg/.env` at startup for auto-login
 - `pytest` (test only)

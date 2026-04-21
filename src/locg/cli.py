@@ -7,8 +7,11 @@ import logging
 import sys
 from typing import Any
 
+from dotenv import load_dotenv
+
 from locg import __version__
 from locg.client import AuthRequired, LOCGClient
+from locg.config import env_path
 from locg.commands import (
     VALID_LISTS,
     _validate_grade,
@@ -132,7 +135,16 @@ def create_parser() -> argparse.ArgumentParser:
     p.add_argument("comic_ids", type=int, nargs="+", help="One or more comic IDs")
 
     # login
-    p = sub.add_parser("login", parents=[common], help="Log in to League of Comic Geeks")
+    p = sub.add_parser(
+        "login",
+        parents=[common],
+        help="Log in to League of Comic Geeks",
+        epilog=(
+            "Env vars LOCG_USERNAME and LOCG_PASSWORD (or a .env file at "
+            "~/.config/locg/.env) enable automatic re-authentication when "
+            "a session expires, so commands do not require a manual login."
+        ),
+    )
     p.add_argument("-u", "--username", help="Username (prompts if not provided)")
     p.add_argument("-p", "--password", help="Password (prompts if not provided)")
 
@@ -140,6 +152,11 @@ def create_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    # Load ~/.config/locg/.env so LOCG_USERNAME/LOCG_PASSWORD are
+    # resolved from a deterministic path, not wherever the user happens
+    # to be running locg from.
+    load_dotenv(dotenv_path=env_path())
+
     # Pre-scan for global flags before argparse, since parent parser
     # defaults can overwrite values when flags appear before subcommand
     raw = sys.argv[1:]

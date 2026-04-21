@@ -31,6 +31,10 @@ def cookie_path() -> Path:
     return _config_dir() / "cookies.json"
 
 
+def env_path() -> Path:
+    return _config_dir() / ".env"
+
+
 def load_config() -> dict[str, Any]:
     p = config_path()
     if p.exists():
