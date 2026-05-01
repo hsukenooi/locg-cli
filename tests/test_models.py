@@ -37,6 +37,40 @@ def test_extract_series_from_fixture(search_series_json):
     assert "leagueofcomicgeeks.com" in series["url"]
 
 
+def test_extract_series_falls_back_to_data_comic_for_issue_results():
+    """Search for a specific issue (e.g. "Amazing Spider-Man #229") returns
+    <li class="issue" data-comic="..."> rather than series-style markup.
+    extract_series must read data-comic so the id field is the comic ID,
+    not 0.
+    """
+    html = """
+    <li class="issue" data-comic="5856184" data-pulls="0" data-potw="0"
+        data-community="">
+      <div class="cover">
+        <a href="/comic/5856184/the-amazing-spider-man-229">
+          <img class="lazy"
+               data-src="https://example.com/cover.jpg"
+               alt="cover"/>
+        </a>
+      </div>
+      <div class="title">
+        <a href="/comic/5856184/the-amazing-spider-man-229">
+          The Amazing Spider-Man #229
+        </a>
+      </div>
+    </li>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    li = soup.find("li")
+    series = extract_series(li)
+    assert series["id"] == 5856184, (
+        "When LOCG returns issue-style search results, extract_series must "
+        "fall back to reading data-comic on the <li> instead of returning 0."
+    )
+    assert "Amazing Spider-Man #229" in series["name"]
+    assert "leagueofcomicgeeks.com/comic/5856184" in series["url"]
+
+
 def test_extract_issue_handles_empty_community(releases_json):
     html = releases_json["list"]
     soup = BeautifulSoup(html, "html.parser")

@@ -21,6 +21,7 @@ from locg.commands import (
     cmd_collection,
     cmd_collection_has,
     cmd_comic,
+    cmd_find,
     cmd_login,
     cmd_pull_list,
     cmd_read_list,
@@ -91,6 +92,24 @@ def create_parser() -> argparse.ArgumentParser:
     # series
     p = sub.add_parser("series", parents=[common], help="Get series details and issue list")
     p.add_argument("id", type=int, help="Series ID")
+
+    # find — locate specific issue(s) within a series without manual pagination
+    p = sub.add_parser(
+        "find",
+        parents=[common],
+        help="Find issues by number within a series (paginates automatically)",
+    )
+    p.add_argument("--series-id", type=int, required=True, help="Series ID to search within")
+    p.add_argument("--issue", required=True, help="Issue number, e.g. 229")
+    p.add_argument(
+        "--variant",
+        help="Case-insensitive substring filter on title (e.g. 'newsstand', 'homage')",
+    )
+    p.add_argument(
+        "--exact",
+        action="store_true",
+        help="Only return titles ending in #<issue> with no variant suffix",
+    )
 
     # collection (with 'has' subcommand)
     p = sub.add_parser("collection", parents=[common], help="View your collection (requires login)")
@@ -214,6 +233,14 @@ def main() -> None:
             result = cmd_comic(client, args.id)
         elif args.command == "series":
             result = cmd_series(client, args.id)
+        elif args.command == "find":
+            result = cmd_find(
+                client,
+                series_id=args.series_id,
+                issue=args.issue,
+                variant=getattr(args, "variant", None),
+                exact=getattr(args, "exact", False),
+            )
         elif args.command == "collection":
             if getattr(args, "collection_command", None) == "has":
                 result = cmd_collection_has(client, args.title_query)

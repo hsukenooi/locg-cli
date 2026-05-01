@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import getpass
+import json
 import logging
 import math
+import re
+import time
 from datetime import date, timedelta
 from typing import Any, Optional
 
@@ -66,6 +69,49 @@ def _validate_price(value: str) -> str:
     if f < 0:
         raise ValueError(f"Invalid price {value!r}: must be non-negative")
     return f"{f:g}"
+
+
+# Sleep duration before retrying a POST that returned non-JSON. Small
+# enough not to hurt batch throughput, large enough to clear a transient
+# rate limit. Module-level so tests can monkeypatch it to 0.
+_RETRY_SLEEP_SECONDS = 2.0
+
+
+def _post_json_with_retry(
+    client: LOCGClient,
+    path: str,
+    data: dict[str, Any],
+) -> tuple[Any, Any]:
+    """POST ``data`` to ``path`` and return ``(response, parsed_json)``.
+
+    The LOCG API occasionally returns HTML (a Cloudflare interstitial or a
+    rate-limit page) on otherwise-successful POSTs.  Hitting that with a
+    raw ``response.json()`` raises ``json.JSONDecodeError`` and aborts the
+    whole batch.  Retry once after a short sleep, which empirically clears
+    the transient case.
+
+    On the second failure we return ``(response, None)`` so callers can
+    fall back to their existing error path (e.g. ``{"error": ...}``)
+    instead of letting the exception bubble.
+    """
+    resp = client.post(path, data=data)
+    try:
+        return resp, resp.json()
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning(
+            "POST %s returned non-JSON (%s); retrying in %ss",
+            path, type(e).__name__, _RETRY_SLEEP_SECONDS,
+        )
+        time.sleep(_RETRY_SLEEP_SECONDS)
+        resp = client.post(path, data=data)
+        try:
+            return resp, resp.json()
+        except (json.JSONDecodeError, ValueError) as e2:
+            logger.warning(
+                "POST %s still returned non-JSON after retry (%s)",
+                path, type(e2).__name__,
+            )
+            return resp, None
 
 
 def _get_week_date(target: Optional[str] = None) -> str:
@@ -147,6 +193,105 @@ def cmd_series(client: LOCGClient, series_id: int) -> dict[str, Any]:
         "issue_count": count,
         "issues": issues,
     }
+
+
+def cmd_find(
+    client: LOCGClient,
+    series_id: int,
+    issue: str,
+    variant: Optional[str] = None,
+    exact: bool = False,
+) -> list[dict[str, Any]]:
+    """Find issues in a series matching ``#<issue>``.
+
+    Paginates through the series internally (no ``format[]=1`` filter, so
+    annuals/giant-size/etc. are findable) and returns issues whose title
+    contains ``#<issue>`` as a word boundary.  Optional refinements:
+
+    * ``variant``: case-insensitive substring filter on the title
+      (e.g. ``"newsstand"``, ``"homage"``).
+    * ``exact``: only keep titles that look like ``<series> #<N>`` with no
+      variant suffix.  Implemented by requiring the title to end in
+      ``#<N>`` once whitespace is collapsed.
+    """
+    # Build a word-boundary matcher for "#<issue>" so #42 doesn't match #420.
+    issue_pattern = re.compile(rf"#\s*{re.escape(str(issue))}(?!\d)")
+    variant_needle = variant.lower() if variant else None
+
+    matches: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    offset = 0
+    page_index = 0
+
+    while True:
+        params: dict[str, Any] = {
+            "list": "search",
+            "view": "thumbs",
+            "series_id": str(series_id),
+            "order": "date-desc",
+        }
+        if offset > 0:
+            params["list_mode_offset"] = str(offset)
+        resp = client.get("/comic/get_comics", params=params)
+        count, soup = parse_list_response(resp.text)
+        items = soup.find_all("li", class_="issue")
+        if not items:
+            # Try generic <li> for series-search HTML variant.
+            items = soup.find_all("li")
+        page_issues = [extract_issue(li) for li in items]
+        logger.debug(
+            "find: series=%d page=%d offset=%d got=%d count=%d",
+            series_id, page_index, offset, len(page_issues), count,
+        )
+
+        if not page_issues:
+            break
+
+        new_count = 0
+        for entry in page_issues:
+            cid = entry.get("id", 0)
+            if not cid or cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+            new_count += 1
+
+            name = entry.get("name", "") or ""
+            if not issue_pattern.search(name):
+                continue
+            if variant_needle and variant_needle not in name.lower():
+                continue
+            if exact:
+                # Collapse whitespace and require the title to end with
+                # "#<issue>" exactly — anything after means a variant tag.
+                normalized = " ".join(name.split())
+                if not re.search(
+                    rf"#\s*{re.escape(str(issue))}\s*$",
+                    normalized,
+                ):
+                    continue
+
+            result: dict[str, Any] = {
+                "id": cid,
+                "title": name,
+            }
+            store_date = entry.get("store_date")
+            if store_date:
+                result["store_date"] = store_date
+            matches.append(result)
+
+        # Pagination: stop when the page returned no new items.  The
+        # server's `count` field is unreliable for series listings (it
+        # reflects only the items in the current page, not the series
+        # total), so we keep paging as long as each page yields fresh
+        # items.  This is the same approach as ``_get_user_list`` for
+        # the ``count == _PAGE_SIZE`` lying-server case, generalised:
+        # any page with new items might be followed by another page.
+        if new_count == 0:
+            break
+        offset += len(page_issues)
+        page_index += 1
+
+    return matches
 
 
 def _check_session_valid(soup: BeautifulSoup) -> None:
@@ -466,15 +611,25 @@ def cmd_add(
         return {"error": "--grade and --price are only valid when adding to collection"}
 
     # Step 1: add to list
-    move_resp = client.post("/comic/my_list_move", data={
-        "comic_id": comic_id,
-        "list_id": LIST_IDS[list_name],
-        "action_id": 1,
-    })
-    try:
-        move_body = move_resp.json()
-    except Exception:
-        move_body = {"status": "ok" if move_resp.status_code == 200 else "error"}
+    move_resp, parsed_move = _post_json_with_retry(
+        client,
+        "/comic/my_list_move",
+        data={
+            "comic_id": comic_id,
+            "list_id": LIST_IDS[list_name],
+            "action_id": 1,
+        },
+    )
+    if parsed_move is None:
+        # Two consecutive non-JSON responses — surface a clean error
+        # rather than letting the JSONDecodeError abort the batch.
+        return {
+            "error": (
+                f"LOCG API returned non-JSON for /comic/my_list_move "
+                f"(HTTP {move_resp.status_code})"
+            )
+        }
+    move_body = parsed_move
 
     # If move failed, return unchanged — no point attempting details.
     is_move_ok = (
@@ -495,11 +650,13 @@ def cmd_add(
     if price is not None:
         payload["price_paid"] = price
 
-    detail_resp = client.post("/comic/post_my_details", data=payload)
-    try:
-        detail_body = detail_resp.json()
-    except Exception:
+    detail_resp, parsed_detail = _post_json_with_retry(
+        client, "/comic/post_my_details", data=payload,
+    )
+    if parsed_detail is None:
         detail_body = {"type": "error", "text": f"HTTP {detail_resp.status_code}"}
+    else:
+        detail_body = parsed_detail
 
     if detail_resp.status_code == 200 and detail_body.get("type") == "success":
         return {
@@ -576,12 +733,12 @@ def cmd_update(
     if condition is not None:
         payload["condition"] = condition
 
-    post_resp = client.post("/comic/post_my_details", data=payload)
-    try:
-        body = post_resp.json()
-    except Exception:
-        body = {"type": "error", "text": f"HTTP {post_resp.status_code}"}
-    return body
+    post_resp, parsed = _post_json_with_retry(
+        client, "/comic/post_my_details", data=payload,
+    )
+    if parsed is None:
+        return {"type": "error", "text": f"HTTP {post_resp.status_code}"}
+    return parsed
 
 
 def cmd_remove(client: LOCGClient, list_name: str, comic_id: int) -> dict[str, Any]:
@@ -589,15 +746,18 @@ def cmd_remove(client: LOCGClient, list_name: str, comic_id: int) -> dict[str, A
     client.require_auth()
     if list_name not in LIST_IDS:
         return {"error": f"Invalid list '{list_name}'. Valid lists: {', '.join(VALID_LISTS)}"}
-    resp = client.post("/comic/my_list_move", data={
-        "comic_id": comic_id,
-        "list_id": LIST_IDS[list_name],
-        "action_id": 0,
-    })
-    try:
-        return resp.json()
-    except Exception:
-        return {"status": "ok" if resp.status_code == 200 else "error"}
+    resp, parsed = _post_json_with_retry(
+        client,
+        "/comic/my_list_move",
+        data={
+            "comic_id": comic_id,
+            "list_id": LIST_IDS[list_name],
+            "action_id": 0,
+        },
+    )
+    if parsed is not None:
+        return parsed
+    return {"status": "ok" if resp.status_code == 200 else "error"}
 
 
 def cmd_check_lists(client: LOCGClient, comic_ids: list[int]) -> list[dict[str, Any]]:

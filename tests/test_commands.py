@@ -17,6 +17,7 @@ from locg.commands import (
     cmd_check_lists,
     cmd_collection,
     cmd_collection_has,
+    cmd_find,
     cmd_pull_list,
     cmd_read_list,
     cmd_releases,
@@ -1013,3 +1014,203 @@ def test_cmd_update_unexpected_http_error(mock_client):
     assert "error" in result
     assert "500" in result["error"]
     mock_client.post.assert_not_called()
+
+
+# --- cmd_find tests ---
+
+
+def _make_find_issue_html(comic_id: int, title: str) -> str:
+    """Build a series-page-style <li class='issue'> with a given title."""
+    return (
+        f'<li class="issue" data-comic="{comic_id}" data-pulls="0" '
+        f'data-potw="0" data-community="0">'
+        f'<div class="title"><a href="/comic/{comic_id}/x">{title}</a></div>'
+        f'<div class="publisher">Marvel Comics</div>'
+        f'</li>'
+    )
+
+
+def _make_find_response(issues: list[tuple[int, str]], total_count: int) -> str:
+    """Build a JSON response of issues for cmd_find tests."""
+    html = "".join(_make_find_issue_html(cid, title) for cid, title in issues)
+    return json.dumps({"count": total_count, "list": html})
+
+
+def test_cmd_find_matches_word_boundary(mock_client):
+    """find --issue 42 must match #42 but not #420 or #421."""
+    issues = [
+        (1, "Amazing Spider-Man #42"),
+        (2, "Amazing Spider-Man #420"),
+        (3, "Amazing Spider-Man #421"),
+        (4, "Amazing Spider-Man #43"),
+    ]
+    resp = MagicMock()
+    resp.text = _make_find_response(issues, total_count=len(issues))
+    mock_client.get.return_value = resp
+
+    result = cmd_find(mock_client, series_id=100043, issue="42")
+    ids = [r["id"] for r in result]
+    assert ids == [1], f"Expected [1] but got {ids} (#42 should not match #420 or #421)"
+    assert result[0]["title"].endswith("#42")
+
+
+def test_cmd_find_filters_by_variant(mock_client):
+    """find --variant filters titles by case-insensitive substring."""
+    issues = [
+        (1, "Amazing Spider-Man #229"),
+        (2, "Amazing Spider-Man #229 Newsstand Edition"),
+        (3, "Amazing Spider-Man #229 Direct Edition"),
+    ]
+    resp = MagicMock()
+    resp.text = _make_find_response(issues, total_count=len(issues))
+    mock_client.get.return_value = resp
+
+    result = cmd_find(mock_client, series_id=100043, issue="229", variant="newsstand")
+    assert len(result) == 1
+    assert result[0]["id"] == 2
+    assert "Newsstand" in result[0]["title"]
+
+
+def test_cmd_find_exact_excludes_variants(mock_client):
+    """find --exact returns only titles ending in #<N> (no variant suffix)."""
+    issues = [
+        (1, "Amazing Spider-Man #229"),
+        (2, "Amazing Spider-Man #229 Newsstand Edition"),
+        (3, "Amazing Spider-Man #229 Variant"),
+    ]
+    resp = MagicMock()
+    resp.text = _make_find_response(issues, total_count=len(issues))
+    mock_client.get.return_value = resp
+
+    result = cmd_find(mock_client, series_id=100043, issue="229", exact=True)
+    assert len(result) == 1
+    assert result[0]["id"] == 1
+
+
+def test_cmd_find_paginates_when_count_equals_page_size(mock_client):
+    """find should page through a series like the user-list pagination logic.
+
+    Looking up issue #145 in a 200-issue series should still find it even when
+    the API caps responses at 140 per page.  Pagination continues as long as
+    each page yields new items, and stops when an empty page is returned.
+    """
+    page1 = [(i, f"Series #{i}") for i in range(1, 141)]   # 140 items
+    page2 = [(i, f"Series #{i}") for i in range(141, 201)]  # 60 items, includes #145
+
+    resp1 = MagicMock()
+    resp1.text = _make_find_response(page1, total_count=_PAGE_SIZE)  # API lies: 140
+    resp2 = MagicMock()
+    resp2.text = _make_find_response(page2, total_count=60)
+    resp3 = MagicMock()
+    resp3.text = _make_find_response([], total_count=0)  # terminator
+    mock_client.get.side_effect = [resp1, resp2, resp3]
+
+    result = cmd_find(mock_client, series_id=42, issue="145")
+    assert len(result) == 1
+    assert result[0]["id"] == 145
+    # Second request should have list_mode_offset=140
+    second_call_params = mock_client.get.call_args_list[1][1]["params"]
+    assert second_call_params["list_mode_offset"] == "140"
+
+
+def test_cmd_find_does_not_filter_format(mock_client):
+    """find must NOT pass format[]=1 — annuals/giant-size should be findable."""
+    issues = [(1, "Amazing Spider-Man Annual #1")]
+    resp = MagicMock()
+    resp.text = _make_find_response(issues, total_count=1)
+    mock_client.get.return_value = resp
+
+    cmd_find(mock_client, series_id=100043, issue="1")
+    params = mock_client.get.call_args[1]["params"]
+    assert "format[]" not in params, (
+        "cmd_find must not filter by format — annuals and special-format "
+        "issues must be findable."
+    )
+
+
+def test_cmd_find_returns_empty_when_no_match(mock_client):
+    issues = [(1, "Amazing Spider-Man #1"), (2, "Amazing Spider-Man #2")]
+    resp = MagicMock()
+    resp.text = _make_find_response(issues, total_count=2)
+    mock_client.get.return_value = resp
+
+    result = cmd_find(mock_client, series_id=100043, issue="999")
+    assert result == []
+
+
+# --- POST retry on JSON parse error ---
+
+
+def test_cmd_add_retries_on_json_decode_error(mock_client, monkeypatch):
+    """cmd_add must retry once when the move POST returns non-JSON, then succeed."""
+    # Patch the sleep so the test stays fast.
+    import locg.commands as commands_mod
+    monkeypatch.setattr(commands_mod, "_RETRY_SLEEP_SECONDS", 0)
+
+    # First response: HTML body — .json() raises JSONDecodeError.
+    bad_resp = MagicMock()
+    bad_resp.status_code = 200
+    bad_resp.json.side_effect = json.JSONDecodeError(
+        "Expecting value", "line 1 column 1 (char 0)", 0,
+    )
+    # Second response: valid JSON success.
+    good_resp = MagicMock()
+    good_resp.status_code = 200
+    good_resp.json.return_value = {"status": "ok"}
+
+    mock_client.post.side_effect = [bad_resp, good_resp]
+
+    result = cmd_add(mock_client, "collection", 12345)
+
+    assert mock_client.post.call_count == 2, (
+        "cmd_add should retry once on JSONDecodeError, then succeed on the "
+        "second attempt."
+    )
+    # Both calls should have the same payload (same endpoint + data).
+    first_call = mock_client.post.call_args_list[0]
+    second_call = mock_client.post.call_args_list[1]
+    assert first_call[0][0] == "/comic/my_list_move"
+    assert second_call[0][0] == "/comic/my_list_move"
+    assert first_call[1]["data"] == second_call[1]["data"]
+
+    assert result == {"status": "ok"}
+
+
+def test_cmd_add_returns_error_after_two_json_failures(mock_client, monkeypatch):
+    """If both attempts fail to return JSON, cmd_add must return a clean error."""
+    import locg.commands as commands_mod
+    monkeypatch.setattr(commands_mod, "_RETRY_SLEEP_SECONDS", 0)
+
+    bad_resp = MagicMock()
+    bad_resp.status_code = 503
+    bad_resp.json.side_effect = json.JSONDecodeError(
+        "Expecting value", "line 1 column 1 (char 0)", 0,
+    )
+    mock_client.post.side_effect = [bad_resp, bad_resp]
+
+    result = cmd_add(mock_client, "collection", 12345)
+
+    assert mock_client.post.call_count == 2
+    assert "error" in result
+    # Should not crash with a JSONDecodeError — that was the original bug.
+
+
+def test_cmd_remove_retries_on_json_decode_error(mock_client, monkeypatch):
+    """cmd_remove must retry once on JSONDecodeError, then succeed."""
+    import locg.commands as commands_mod
+    monkeypatch.setattr(commands_mod, "_RETRY_SLEEP_SECONDS", 0)
+
+    bad_resp = MagicMock()
+    bad_resp.status_code = 200
+    bad_resp.json.side_effect = json.JSONDecodeError(
+        "Expecting value", "line 1 column 1 (char 0)", 0,
+    )
+    good_resp = MagicMock()
+    good_resp.status_code = 200
+    good_resp.json.return_value = {"status": "ok"}
+
+    mock_client.post.side_effect = [bad_resp, good_resp]
+
+    result = cmd_remove(mock_client, "collection", 12345)
+    assert mock_client.post.call_count == 2
+    assert result == {"status": "ok"}

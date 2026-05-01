@@ -98,16 +98,36 @@ def extract_issue(li: Tag) -> dict[str, Any]:
 
 
 def extract_series(li: Tag) -> dict[str, Any]:
-    """Extract series data from a <li> in a search series response."""
+    """Extract series data from a <li> in a search series response.
+
+    Search results are heterogeneous: when the query matches a series name
+    LOCG returns a series-style ``<li>`` with a ``link-collection-series``
+    anchor carrying ``data-id``. When the query matches a specific issue
+    (e.g. "Amazing Spider-Man #229") LOCG instead returns an issue-style
+    ``<li class="issue" data-comic="...">``. We accept both shapes and put
+    the relevant numeric ID (series ID or comic ID) into the ``id`` field
+    so callers always get a usable identifier.
+    """
     # Series link and ID
     link = li.find("a", class_="link-collection-series")
     series_id = int(link.get("data-id", 0)) if link else 0
     url = link["href"] if link and link.get("href") else ""
 
+    # Issue-style result fallback: <li class="issue" data-comic="...">
+    # carries the comic ID rather than a series ID. Use it when no
+    # link-collection-series anchor was present.
+    if series_id == 0:
+        comic_id_raw = li.get("data-comic")
+        if comic_id_raw:
+            series_id = _safe_int(comic_id_raw)
+
     # Title
     title_div = li.find("div", class_="title")
     title_link = title_div.find("a") if title_div else None
     name = get_text_clean(title_link) if title_link else get_text_clean(title_div)
+    # When url wasn't set from a series link, fall back to the title link's href
+    if not url and title_link and title_link.get("href"):
+        url = title_link["href"]
 
     # Cover image
     img = li.find("img", class_="lazy")

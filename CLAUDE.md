@@ -17,6 +17,11 @@ locg search "Batman"
 # Get all issues in a series — returns issue IDs, names, dates
 locg series <series_id>
 
+# Find a specific issue (by number) within a series — paginates internally
+locg find --series-id <series_id> --issue <N>
+locg find --series-id <series_id> --issue <N> --variant newsstand
+locg find --series-id <series_id> --issue <N> --exact
+
 # Get full details for a specific comic (creators, price, description)
 locg comic <comic_id>
 
@@ -29,7 +34,9 @@ locg releases --date 2024-01-15
 
 Comic IDs are required for add/remove/check. To find a comic ID:
 1. `locg search "<series name>"` — find the series ID
-2. `locg series <series_id>` — find the issue ID in the series listing
+2. `locg find --series-id <series_id> --issue <N>` — get the comic ID for issue N
+   (or `locg series <series_id>` to browse all issues — note that `series` filters
+   out annuals/giant-size; use `find` if you need those)
 3. `locg add collection <comic_id>` — add by issue ID
 
 ### Managing lists (requires login)
