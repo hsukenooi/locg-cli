@@ -184,12 +184,20 @@ class LOCGClient:
     def verify_session(self) -> bool:
         """Check if the current session is valid by making a lightweight request.
 
+        Fetches a zero-result series search rather than the full collection.
+        The response is a tiny JSON envelope (~1 KB) whose embedded HTML still
+        carries ``data-user="0"`` for anonymous sessions, so we can detect
+        expiry without paying the ~545 KB collection download cost.
+
         Returns True if the server recognizes us as a logged-in user.
         """
         from locg.parser import parse_list_response
         resp = self.get("/comic/get_comics", params={
-            "list": "collection",
+            "list": "search",
+            "list_option": "series",
             "view": "thumbs",
+            "title": "__locg_session_probe__",
+            "order": "alpha-asc",
         })
         _count, soup = parse_list_response(resp.text)
         tag = soup.find(attrs={"data-user": "0"})

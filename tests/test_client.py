@@ -209,6 +209,72 @@ def test_login_success_primes_verified_cache():
     assert client.verify_session.call_count == 1  # only the one from login()
 
 
+def _make_list_response_text(data_user: str = "12345") -> str:
+    """Build a minimal /comic/get_comics JSON payload like the real server returns.
+
+    The HTML fragment is the bit that carry ``data-user``.  When *data_user*
+    is ``"0"`` the session is anonymous; any other value means logged-in.
+    """
+    import json
+    html = f'<ul data-user="{data_user}" class="comic-list-thumbs"></ul>'
+    return json.dumps({"count": 0, "list": html})
+
+
+def test_verify_session_valid():
+    """verify_session returns True when data-user is not '0'."""
+    client = _make_client_with_session()
+
+    resp_mock = MagicMock()
+    resp_mock.status_code = 200
+    resp_mock.text = _make_list_response_text(data_user="12345")
+    client.get = MagicMock(return_value=resp_mock)
+
+    assert client.verify_session() is True
+
+
+def test_verify_session_expired():
+    """verify_session returns False when data-user='0' (anonymous session)."""
+    client = _make_client_with_session()
+
+    resp_mock = MagicMock()
+    resp_mock.status_code = 200
+    resp_mock.text = _make_list_response_text(data_user="0")
+    client.get = MagicMock(return_value=resp_mock)
+
+    assert client.verify_session() is False
+
+
+def test_verify_session_uses_probe_endpoint_not_collection():
+    """verify_session must call the lightweight search probe, not the collection endpoint."""
+    client = _make_client_with_session()
+
+    resp_mock = MagicMock()
+    resp_mock.status_code = 200
+    resp_mock.text = _make_list_response_text(data_user="12345")
+    client.get = MagicMock(return_value=resp_mock)
+
+    client.verify_session()
+
+    client.get.assert_called_once()
+    call_args = client.get.call_args
+    path = call_args[0][0] if call_args[0] else call_args.kwargs.get("path", "")
+    params = call_args[1].get("params", {}) if call_args[1] else {}
+    if not params and call_args[0] and len(call_args[0]) > 1:
+        params = call_args[0][1]
+
+    assert path == "/comic/get_comics", f"Unexpected path: {path}"
+    # Must be a search, not the collection list
+    assert params.get("list") == "search", (
+        f"verify_session should use 'search' not '{params.get('list')}' "
+        f"to avoid fetching the full collection"
+    )
+    assert params.get("list_option") == "series"
+    # Probe title should be present so the response is tiny
+    assert "__locg_session_probe__" in params.get("title", ""), (
+        "verify_session should use a probe title that returns zero results"
+    )
+
+
 def test_close_tears_down_playwright():
     """close() must shut down the context and the Playwright driver."""
     client = _make_client_with_session()
