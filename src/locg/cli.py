@@ -40,6 +40,7 @@ from locg.commands import (
     cmd_series,
     cmd_update,
     cmd_wish_list,
+    cmd_wish_list_add,
     cmd_wish_list_from_cache,
     parse_lookup_spec,
 )
@@ -174,8 +175,19 @@ def create_parser() -> argparse.ArgumentParser:
     p.add_argument("--title", help="Filter results by title (case-insensitive substring match)")
 
     # wish-list
-    p = sub.add_parser("wish-list", parents=[common], help="View your wish list (requires login)")
+    p = sub.add_parser("wish-list", parents=[common], help="View your wish list (requires login for live fetch)")
     p.add_argument("--title", help="Filter results by title (case-insensitive substring match)")
+    wish_sub = p.add_subparsers(dest="wish_list_command")
+    p_wish_add = wish_sub.add_parser(
+        "add",
+        parents=[common],
+        help="Add a title to the local wish-list cache (no login required)",
+        epilog=(
+            "Locally-added entries are NOT preserved across 'locg collection import' — "
+            "a fresh import overwrites the cache with data from LOCG."
+        ),
+    )
+    p_wish_add.add_argument("add_title", metavar="title", help="Title to add (e.g. 'Amazing Spider-Man #300')")
 
     # read-list
     p = sub.add_parser("read-list", parents=[common], help="View your read list (requires login)")
@@ -315,13 +327,23 @@ def main() -> None:
         if args.command == "collection"
         else None
     )
+    # wish-list add is always local (no Playwright needed).
     # wish-list skips Playwright when the local cache exists; it still needs a
     # client when no cache is present (live fallback, R5).
-    _wish_list_cached = args.command == "wish-list" and wish_list_cache_path().exists()
+    _wish_list_sub = (
+        getattr(args, "wish_list_command", None) if args.command == "wish-list" else None
+    )
+    _wish_list_add = _wish_list_sub == "add"
+    _wish_list_cached = (
+        args.command == "wish-list"
+        and not _wish_list_add
+        and wish_list_cache_path().exists()
+    )
     _needs_client = not (
         args.command == "cache"
         or (_collection_sub in _LOCAL_COLLECTION_SUBCMDS)
         or _wish_list_cached
+        or _wish_list_add
     )
 
     client: Optional[LOCGClient] = None
@@ -388,7 +410,9 @@ def main() -> None:
         elif args.command == "pull-list":
             result = cmd_pull_list(client, title=args.title)
         elif args.command == "wish-list":
-            if _wish_list_cached:
+            if _wish_list_add:
+                result = cmd_wish_list_add(args.add_title)
+            elif _wish_list_cached:
                 try:
                     result = cmd_wish_list_from_cache(title=args.title)
                 except (FileNotFoundError, json.JSONDecodeError):

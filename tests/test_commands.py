@@ -1932,3 +1932,45 @@ def test_cmd_wish_list_from_cache_missing_file(tmp_path):
     import pytest
     with pytest.raises(FileNotFoundError):
         cmd_wish_list_from_cache()
+
+
+# ---------------------------------------------------------------------------
+# cmd_wish_list_add
+# ---------------------------------------------------------------------------
+
+def test_cmd_wish_list_add_creates_cache_if_missing(tmp_path):
+    """cmd_wish_list_add creates wish-list.json when none exists."""
+    from locg.commands import cmd_wish_list_add, wish_list_cache_path
+    result = cmd_wish_list_add("Amazing Spider-Man #300")
+    assert result == {"status": "ok", "added": {"name": "Amazing Spider-Man #300", "id": None}}
+    assert wish_list_cache_path().exists()
+
+
+def test_cmd_wish_list_add_appends_to_existing_cache(tmp_path):
+    """cmd_wish_list_add appends without removing existing entries."""
+    from locg.commands import cmd_wish_list_add, cmd_wish_list_from_cache
+    _make_wish_list_cache(tmp_path)  # 3 existing items
+    cmd_wish_list_add("New Comic #1")
+    items = cmd_wish_list_from_cache()
+    assert len(items) == 4
+    assert items[-1]["name"] == "New Comic #1"
+    assert items[-1]["id"] is None
+
+
+def test_cmd_wish_list_add_visible_via_from_cache(tmp_path):
+    """Entry added by cmd_wish_list_add is returned by cmd_wish_list_from_cache."""
+    from locg.commands import cmd_wish_list_add, cmd_wish_list_from_cache
+    cmd_wish_list_add("Batman #404")
+    result = cmd_wish_list_from_cache()
+    assert len(result) == 1
+    assert result[0]["name"] == "Batman #404"
+    assert result[0]["id"] is None
+
+
+def test_cmd_wish_list_add_file_permissions(tmp_path):
+    """wish-list.json is written with 600 permissions."""
+    import stat
+    from locg.commands import cmd_wish_list_add, wish_list_cache_path
+    cmd_wish_list_add("X-Men #1")
+    mode = wish_list_cache_path().stat().st_mode
+    assert stat.S_IMODE(mode) == 0o600

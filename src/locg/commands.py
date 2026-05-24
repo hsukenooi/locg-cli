@@ -592,6 +592,44 @@ def cmd_wish_list(client: LOCGClient, title: Optional[str] = None) -> list[dict[
     return _get_user_list(client, "wish", title=title)
 
 
+def cmd_wish_list_add(title: str) -> dict[str, Any]:
+    """Append a locally-added entry to the wish-list cache (no LOCG round-trip).
+
+    Note: locally-added entries are NOT preserved across 'locg collection import'.
+    """
+    import os
+    import stat
+    import tempfile
+
+    path = wish_list_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if path.exists():
+        with open(path) as f:
+            data = json.load(f)
+    else:
+        data = {"items": []}
+
+    entry: dict[str, Any] = {"name": title, "id": None}
+    data.setdefault("items", []).append(entry)
+
+    fd, tmp = tempfile.mkstemp(prefix=".wish-list-", suffix=".json.tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, path)
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
+    except Exception:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        raise
+
+    return {"status": "ok", "added": entry}
+
+
 def cmd_wish_list_from_cache(title: Optional[str] = None) -> list[dict[str, Any]]:
     """Serve the wish list from the local cache populated by collection import.
 
