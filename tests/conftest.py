@@ -94,9 +94,11 @@ def _isolate_wish_list_cache(tmp_path, monkeypatch):
 
     Patches every module that imports wish_list_cache_path at module level so
     that tests never touch the real ~/.cache/locg/wish-list.json.
-    Additional module patches (locg.commands, locg.cli) are added below as
-    those modules are updated to import the function.
     """
     wish_path = tmp_path / "wish-list.json"
     import locg.collection_io as cio_mod
+    import locg.commands as cmd_mod
+    import locg.cli as cli_mod
     monkeypatch.setattr(cio_mod, "wish_list_cache_path", lambda: wish_path)
+    monkeypatch.setattr(cmd_mod, "wish_list_cache_path", lambda: wish_path)
+    monkeypatch.setattr(cli_mod, "wish_list_cache_path", lambda: wish_path)
