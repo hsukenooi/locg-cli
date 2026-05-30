@@ -878,6 +878,104 @@ def test_record_win_no_variant_skips_detail_lookup(tmp_path):
     assert cache.load()["comics"][-1]["full_title"].endswith("Newsstand Edition")
 
 
+# --- BUI-34: dedup already-owned wins ---
+
+def _seed_owned_spawn(cache, full_title="Spawn #98", in_collection=1):
+    from locg.collection_cache import rebuild_series_name_index
+    _seed_cache(cache, [{
+        **_agent_win_row(series="Spawn (1992 - Present)", full_title=full_title),
+        "in_collection": in_collection,
+        "source": "locg_export",
+    }])
+    cache.apply(
+        lambda p: p.__setitem__("series_name_index", rebuild_series_name_index(p)),
+        command="test-rebuild",
+    )
+
+
+def test_record_win_skips_already_owned(tmp_path):
+    """A win for an issue already owned in the cache is skipped, not duplicated."""
+    from locg.commands import cmd_collection_record_win
+
+    cache = make_cache(tmp_path)
+    _seed_owned_spawn(cache, "Spawn #98")
+
+    result = cmd_collection_record_win(
+        [_make_win(series="Spawn", issue="98")],
+        cache=cache, metron=_null_metron(),
+    )
+
+    assert result["skipped_already_owned"] == 1
+    assert result["rows_written"] == 0
+    assert result["skipped_already_owned_titles"] == ["Spawn (1992 - Present) #98"]
+    # No new agent_win row written
+    assert [r for r in cache.load()["comics"] if r["source"] == "agent_win"] == []
+
+
+def test_record_win_writes_genuinely_new_issue(tmp_path):
+    """A win for a different issue of an owned series is still written."""
+    from locg.commands import cmd_collection_record_win
+
+    cache = make_cache(tmp_path)
+    _seed_owned_spawn(cache, "Spawn #98")
+
+    result = cmd_collection_record_win(
+        [_make_win(series="Spawn", issue="99")],
+        cache=cache, metron=_null_metron(),
+    )
+
+    assert result["skipped_already_owned"] == 0
+    assert result["rows_written"] == 1
+
+
+def test_record_win_unowned_row_not_skipped(tmp_path):
+    """A cache row with in_collection=0 (wish-list/not owned) does not block a win."""
+    from locg.commands import cmd_collection_record_win
+
+    cache = make_cache(tmp_path)
+    _seed_owned_spawn(cache, "Spawn #98", in_collection=0)
+
+    result = cmd_collection_record_win(
+        [_make_win(series="Spawn", issue="98")],
+        cache=cache, metron=_null_metron(),
+    )
+
+    assert result["skipped_already_owned"] == 0
+    assert result["rows_written"] == 1
+
+
+def test_record_win_dedup_ignores_variant(tmp_path):
+    """A variant win for an already-owned issue is still deduped (series+issue)."""
+    from locg.commands import cmd_collection_record_win
+
+    cache = make_cache(tmp_path)
+    _seed_owned_spawn(cache, "Spawn #313")
+
+    result = cmd_collection_record_win(
+        [_make_win(series="Spawn", issue="313", variant_text="Capullo Variant")],
+        cache=cache, metron=_null_metron(),
+    )
+
+    assert result["skipped_already_owned"] == 1
+    assert result["rows_written"] == 0
+
+
+def test_record_win_dedup_does_not_conflate_annual(tmp_path):
+    """Owning 'Spawn Annual #1' must not skip a plain 'Spawn #1' win."""
+    from locg.commands import cmd_collection_record_win
+
+    cache = make_cache(tmp_path)
+    _seed_owned_spawn(cache, "Spawn Annual #1")
+
+    result = cmd_collection_record_win(
+        [_make_win(series="Spawn", issue="1")],
+        cache=cache, metron=_null_metron(),
+    )
+
+    assert result["skipped_already_owned"] == 0
+    assert result["rows_written"] == 1
+
+
 # --- Tracking fields ---
 
 def test_record_win_tracking_fields(tmp_path):

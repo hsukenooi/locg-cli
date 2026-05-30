@@ -1680,8 +1680,26 @@ def cmd_collection_record_win(
         row.get("full_title", "") for row in payload.get("comics", [])
     }
 
+    # BUI-34: index of (normalized series, issue token) already owned in the
+    # cache, so wins for back-issues won before the last import aren't written as
+    # duplicate pending rows. Uses the full_title prefix for series identity so
+    # an Annual doesn't shadow the base issue (consistent with collection-check).
+    def _issue_key(token: str) -> str:
+        return (token.strip().lstrip("0") or token.strip()).lower()
+
+    owned_index: set[tuple[str, str]] = set()
+    for r in payload.get("comics", []):
+        if not r.get("in_collection"):
+            continue
+        prefix, token = _split_full_title(r.get("full_title") or "")
+        if token is None:
+            continue
+        owned_index.add((_normalize_series_key(prefix), _issue_key(token)))
+
     rows_written = 0
     chunks_committed = 0
+    skipped_already_owned = 0
+    skipped_already_owned_titles: list[str] = []
     manual_variant_count = 0
     manual_series_count = 0
     metron_lookups_attempted = 0
@@ -1747,6 +1765,18 @@ def cmd_collection_record_win(
                 canonical_series = series_raw
                 needs_manual_series = True
                 chunk_manual_series += 1
+
+            # BUI-34: skip wins already owned in the cache (series + issue),
+            # before any variant lookup or row construction. Dedup is by issue
+            # identity and ignores variant, matching the reported duplicates
+            # (variant Spawn back-issues already owned).
+            if issue_num and (
+                _normalize_series_key(canonical_series),
+                _issue_key(issue_num),
+            ) in owned_index:
+                skipped_already_owned += 1
+                skipped_already_owned_titles.append(f"{canonical_series} #{issue_num}")
+                continue
 
             # R32: variant handling
             needs_manual_variant = False
@@ -1847,6 +1877,8 @@ def cmd_collection_record_win(
     return {
         "rows_written": rows_written,
         "chunks_committed": chunks_committed,
+        "skipped_already_owned": skipped_already_owned,
+        "skipped_already_owned_titles": skipped_already_owned_titles,
         "manual_variant_count": manual_variant_count,
         "manual_series_count": manual_series_count,
         "metron_lookups_attempted": metron_lookups_attempted,
