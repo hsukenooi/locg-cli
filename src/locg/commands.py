@@ -1489,6 +1489,26 @@ def cmd_collection_status(verbose: bool = False) -> dict[str, Any]:
     return result
 
 
+_ISSUE_TOKEN_RE = re.compile(r"#\s*(\d+[A-Za-z]?)\b")
+
+
+def _split_full_title(full_title: str) -> tuple[str, Optional[str]]:
+    """Split a cached ``full_title`` into ``(series_portion, issue_token)``.
+
+    ``"Thor #154"``                -> ``("Thor", "154")``
+    ``"Fantastic Four Annual #6"`` -> ``("Fantastic Four Annual", "6")``
+    ``"Watchmen"`` (no ``#N``)     -> ``("Watchmen", None)``
+
+    The series portion is everything before the ``#N`` token, so qualifier words
+    like ``Annual`` / ``King-Size Annual`` stay attached to the series identity
+    instead of being silently collapsed into the base series (BUI-26).
+    """
+    m = _ISSUE_TOKEN_RE.search(full_title)
+    if m:
+        return full_title[: m.start()].strip(), m.group(1)
+    return full_title.strip(), None
+
+
 def cmd_collection_check(
     series: str,
     issue: str,
@@ -1500,8 +1520,6 @@ def cmd_collection_check(
     Returns {match_status, full_title_matched, cache_age_days}.
     match_status: "in_collection" | "not_in_cache".
     """
-    import re
-
     cache = CollectionCache()
     payload = cache.load()
     cache_age = _cache_age_days(payload.get("last_full_import"))
@@ -1511,22 +1529,28 @@ def cmd_collection_check(
     issue_stripped = str(issue).strip().lstrip("0") or str(issue).strip()
 
     for row in payload.get("comics", []):
-        row_series_key = _normalize_series_key(row.get("series_name") or "")
-        if row_series_key != series_key:
+        # in_collection is a copies-owned count (0 = wish-list / pull / read but
+        # not owned). Only owned rows count as "in collection" (BUI-26 bug D).
+        if not row.get("in_collection"):
             continue
 
         full_title = row.get("full_title") or ""
+        title_series, title_issue = _split_full_title(full_title)
 
-        # Match #<number> token (ignoring leading zeros)
-        m = re.search(r"#\s*(\d+[A-Za-z]?)\b", full_title)
-        if m:
-            title_issue = m.group(1).lstrip("0") or m.group(1)
-            if title_issue.lower() != issue_stripped.lower():
-                # Also try the raw issue string (e.g. "Annual 1")
-                if issue.strip().lower() not in full_title.lower():
-                    continue
+        # Series identity comes from the title prefix, so "Fantastic Four Annual"
+        # does not satisfy a plain "Fantastic Four" query (BUI-26 bug C).
+        if _normalize_series_key(title_series) != series_key:
+            continue
+
+        if title_issue is not None:
+            # Exact issue-token equality (leading zeros ignored). No substring
+            # fallback, so issue "2" no longer matches "#32" (BUI-26 bug B).
+            norm_title_issue = title_issue.lstrip("0") or title_issue
+            if norm_title_issue.lower() != issue_stripped.lower():
+                continue
         else:
-            # No '#N' token — try substring match (TPBs, annuals, specials)
+            # Title carries no "#N" (TPB / OGN / special): require the issue
+            # token to appear verbatim.
             if issue.strip().lower() not in full_title.lower():
                 continue
 

@@ -384,6 +384,127 @@ def test_check_includes_cache_age_days(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# cmd_collection_check — BUI-26 matcher regressions
+# ---------------------------------------------------------------------------
+
+def test_check_rejects_substring_issue_match(tmp_path, monkeypatch):
+    """Issue '2' must not match '#32'/'#12'/'#222' (BUI-26 bug B).
+
+    The old fallback did `issue in full_title`, so a check for #2 matched any
+    title containing a '2' and reported owned books the user did not own.
+    """
+    import locg.commands as cmds
+
+    cache = make_cache(tmp_path)
+    monkeypatch.setattr(cmds, "CollectionCache", lambda: cache)
+    _seed_cache(cache, [_agent_win_row(
+        series="Fantastic Four (Vol. 1) (1961 - 1996)",
+        full_title="Fantastic Four #32",
+    )])
+
+    result = cmds.cmd_collection_check(series="Fantastic Four", issue="2")
+    assert result["match_status"] == "not_in_cache"
+    assert result["full_title_matched"] is None
+
+
+def test_check_rejects_annual_for_base_series_query(tmp_path, monkeypatch):
+    """A plain 'Fantastic Four #6' query must not match 'Fantastic Four Annual #6'.
+
+    Annuals are filed under the base series_name with the qualifier in the
+    full_title; the matcher must keep them distinct (BUI-26 bug C / GSFF).
+    """
+    import locg.commands as cmds
+
+    cache = make_cache(tmp_path)
+    monkeypatch.setattr(cmds, "CollectionCache", lambda: cache)
+    _seed_cache(cache, [_agent_win_row(
+        series="Fantastic Four (Vol. 1) (1961 - 1996)",
+        full_title="Fantastic Four Annual #6",
+    )])
+
+    result = cmds.cmd_collection_check(series="Fantastic Four", issue="6")
+    assert result["match_status"] == "not_in_cache"
+
+
+def test_check_matches_annual_by_qualified_name(tmp_path, monkeypatch):
+    """The annual is still findable when queried by its qualified name."""
+    import locg.commands as cmds
+
+    cache = make_cache(tmp_path)
+    monkeypatch.setattr(cmds, "CollectionCache", lambda: cache)
+    _seed_cache(cache, [_agent_win_row(
+        series="Fantastic Four (Vol. 1) (1961 - 1996)",
+        full_title="Fantastic Four Annual #6",
+    )])
+
+    result = cmds.cmd_collection_check(series="Fantastic Four Annual", issue="6")
+    assert result["match_status"] == "in_collection"
+    assert result["full_title_matched"] == "Fantastic Four Annual #6"
+
+
+def test_check_giant_size_not_confused_with_annual(tmp_path, monkeypatch):
+    """Giant-Size Fantastic Four must not match a Fantastic Four Annual row.
+
+    Folds in the GSFF false-positive: collection-check wrongly reported
+    Giant-Size Fantastic Four as owned by conflating it with FF Annual.
+    """
+    import locg.commands as cmds
+
+    cache = make_cache(tmp_path)
+    monkeypatch.setattr(cmds, "CollectionCache", lambda: cache)
+    _seed_cache(cache, [_agent_win_row(
+        series="Fantastic Four (Vol. 1) (1961 - 1996)",
+        full_title="Fantastic Four Annual #2",
+    )])
+
+    result = cmds.cmd_collection_check(series="Giant-Size Fantastic Four", issue="2")
+    assert result["match_status"] == "not_in_cache"
+
+
+def test_check_ignores_unowned_rows(tmp_path, monkeypatch):
+    """in_collection is a copies-owned count; 0 means not owned (BUI-26 bug D).
+
+    A wish-list/pull row (in_collection=0) must not report as in_collection,
+    while a multi-copy row (in_collection=2) still counts as owned.
+    """
+    import locg.commands as cmds
+
+    cache = make_cache(tmp_path)
+    monkeypatch.setattr(cmds, "CollectionCache", lambda: cache)
+    unowned = _agent_win_row(series="Batman (Vol. 1)", full_title="Batman #100")
+    unowned["in_collection"] = 0
+    multi = _agent_win_row(series="Detective Comics (Vol. 1)", full_title="Detective Comics #27")
+    multi["in_collection"] = 2
+    _seed_cache(cache, [unowned, multi])
+
+    assert cmds.cmd_collection_check(series="Batman", issue="100")["match_status"] == "not_in_cache"
+    assert cmds.cmd_collection_check(series="Detective Comics", issue="27")["match_status"] == "in_collection"
+
+
+@pytest.mark.skip(reason="BUI-46: masthead/cover-title series alias (Mighty Thor vs Thor) "
+                         "false negative — needs a series-alias strategy, tracked separately")
+def test_check_mighty_thor_masthead_alias_known_gap(tmp_path, monkeypatch):
+    """Thor #154 is owned as 'Thor (Vol. 1)' but identify reports 'The Mighty Thor'.
+
+    This is the original BUI-26 false negative (the comic that got sniped while
+    owned). Un-skip when BUI-46 lands a series-alias fix.
+    """
+    import locg.commands as cmds
+
+    cache = make_cache(tmp_path)
+    monkeypatch.setattr(cmds, "CollectionCache", lambda: cache)
+    _seed_cache(cache, [_agent_win_row(
+        series="Thor (Vol. 1) (1966 - 1996)",
+        full_title="Thor #154",
+    )])
+
+    # The catalog name already works:
+    assert cmds.cmd_collection_check(series="Thor", issue="154")["match_status"] == "in_collection"
+    # The cover/masthead name should also resolve (currently does not):
+    assert cmds.cmd_collection_check(series="The Mighty Thor", issue="154")["match_status"] == "in_collection"
+
+
+# ---------------------------------------------------------------------------
 # cmd_collection_doctor
 # ---------------------------------------------------------------------------
 
