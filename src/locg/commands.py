@@ -1665,6 +1665,7 @@ def cmd_collection_record_win(
             identify = win.get("identify_data") or {}
             series_raw = str(identify.get("series") or "").strip()
             issue_num = str(identify.get("issue") or "").strip()
+            year_raw = identify.get("year")
             variant_text = str(identify.get("variant_text") or "").strip().lower()
             end_date = str(win.get("end_date_iso") or "").strip()
             item_id = str(win.get("item_id") or "").strip()
@@ -1690,7 +1691,7 @@ def cmd_collection_record_win(
             elif not metron_disabled:
                 try:
                     chunk_metron_attempted += 1
-                    metron_data = metron.lookup_issue(series_raw, issue_num)
+                    metron_data = metron.lookup_issue(series_raw, issue_num, year_raw)
                     if metron_data:
                         chunk_metron_succeeded += 1
                         canonical_series = metron.format_series_name(metron_data)

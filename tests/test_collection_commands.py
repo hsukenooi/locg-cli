@@ -1020,7 +1020,7 @@ def test_record_win_integration_mix(tmp_path):
 
     # Metron returns hit for Spawn, None for unknown
     metron = MagicMock()
-    def metron_lookup(series_query, issue_number):
+    def metron_lookup(series_query, issue_number, year=None):
         if "Spawn" in series_query:
             return {
                 "metron_id": 5,
