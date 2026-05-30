@@ -777,6 +777,107 @@ def test_record_win_no_variant_no_flag(tmp_path):
     assert row["needs_manual_variant"] is False
 
 
+# --- BUI-33: Metron variant resolution ---
+
+def test_fuzzy_variant_match_exact_ish():
+    from locg.commands import _fuzzy_variant_match
+    names = ["Capullo Variant", "Todd McFarlane Cover"]
+    assert _fuzzy_variant_match("capullo variant", names) == "Capullo Variant"
+
+
+def test_fuzzy_variant_match_across_abbreviation():
+    from locg.commands import _fuzzy_variant_match
+    # auction text uses "ASM 299"; Metron spells out the series
+    names = ["Amazing Spider-Man #299 Homage Virgin Variant", "Direct Edition"]
+    assert _fuzzy_variant_match(
+        "asm 299 homage virgin variant", names
+    ) == "Amazing Spider-Man #299 Homage Virgin Variant"
+
+
+def test_fuzzy_variant_match_rejects_generic_only_overlap():
+    from locg.commands import _fuzzy_variant_match
+    # only the generic word "variant"/"cover" overlaps — must not match
+    assert _fuzzy_variant_match("capullo variant", ["Skan Cover Variant"]) is None
+
+
+def test_fuzzy_variant_match_no_names():
+    from locg.commands import _fuzzy_variant_match
+    assert _fuzzy_variant_match("capullo variant", []) is None
+
+
+def _metron_with_variants(series_name: str, variants: list[str]):
+    """Metron stub: series lookup hits, and issue-detail returns variant names."""
+    from unittest.mock import MagicMock
+    m = MagicMock()
+    m.lookup_issue.return_value = {
+        "metron_id": 777,
+        "cover_date": "1992-05-01",
+        "store_date": None,
+        "series_year_began": 1992,
+        "series_year_end": None,
+        "series_name": series_name.split(" (")[0],
+        "series_id": 5,
+    }
+    m.format_series_name.return_value = series_name
+    m.lookup_issue_detail.return_value = {"variants": variants}
+    return m
+
+
+def test_record_win_metron_variant_match(tmp_path):
+    """Unknown variant text resolves via Metron issue-detail fuzzy match."""
+    from locg.commands import cmd_collection_record_win
+
+    cache = make_cache(tmp_path)
+    metron = _metron_with_variants("Spawn (1992 - Present)", ["Capullo Variant", "Direct Edition"])
+    result = cmd_collection_record_win(
+        [_make_win(series="Spawn", issue="313", variant_text="Capullo Variant")],
+        cache=cache,
+        metron=metron,
+    )
+
+    assert result["metron_variant_lookups_attempted"] == 1
+    assert result["metron_variant_matches"] == 1
+    assert result["manual_variant_count"] == 0
+
+    row = cache.load()["comics"][-1]
+    assert row["full_title"] == "Spawn (1992 - Present) #313 Capullo Variant"
+    assert row["needs_manual_variant"] is False
+
+
+def test_record_win_metron_variant_no_match_flags(tmp_path):
+    """Metron has the issue but no matching variant → still flagged manual."""
+    from locg.commands import cmd_collection_record_win
+
+    cache = make_cache(tmp_path)
+    metron = _metron_with_variants("Spawn (1992 - Present)", ["Some Unrelated Cover"])
+    result = cmd_collection_record_win(
+        [_make_win(series="Spawn", issue="313", variant_text="Capullo Variant")],
+        cache=cache,
+        metron=metron,
+    )
+
+    assert result["metron_variant_lookups_attempted"] == 1
+    assert result["metron_variant_matches"] == 0
+    assert result["manual_variant_count"] == 1
+    assert cache.load()["comics"][-1]["needs_manual_variant"] is True
+
+
+def test_record_win_no_variant_skips_detail_lookup(tmp_path):
+    """A known-suffix variant must not trigger a Metron issue-detail call."""
+    from locg.commands import cmd_collection_record_win
+
+    cache = make_cache(tmp_path)
+    metron = _metron_with_variants("Spawn (1992 - Present)", ["Capullo Variant"])
+    result = cmd_collection_record_win(
+        [_make_win(series="Spawn", issue="313", variant_text="newsstand")],
+        cache=cache,
+        metron=metron,
+    )
+    assert result["metron_variant_lookups_attempted"] == 0
+    metron.lookup_issue_detail.assert_not_called()
+    assert cache.load()["comics"][-1]["full_title"].endswith("Newsstand Edition")
+
+
 # --- Tracking fields ---
 
 def test_record_win_tracking_fields(tmp_path):

@@ -1585,6 +1585,46 @@ VARIANT_SUFFIX_MAP: dict[str, str] = {
     "facsimile edition": "Facsimile Edition",
 }
 
+# Generic variant words that, on their own, are too weak to anchor a match.
+_VARIANT_STOPWORDS = frozenset({"variant", "cover", "edition", "the", "a", "an"})
+_VARIANT_MATCH_THRESHOLD = 0.5
+
+
+def _variant_tokens(text: str) -> set[str]:
+    """Normalize a variant label to a set of alphanumeric tokens."""
+    return {t for t in re.sub(r"[^a-z0-9]+", " ", text.lower()).split() if t}
+
+
+def _fuzzy_variant_match(variant_text: str, names: list[str]) -> Optional[str]:
+    """Best fuzzy match of ``variant_text`` against Metron variant ``names``.
+
+    Metron and the auction text rarely match verbatim ("Capullo Variant" vs
+    "capullo variant", "ASM 299 Homage Cover" vs "Amazing Spider-Man #299 Homage
+    Cover"), so compare by token-set Jaccard similarity. Requires the overlap to
+    include at least one non-generic token (not just "variant"/"cover") and a
+    similarity >= the threshold. Returns the best-matching name or ``None``.
+    """
+    want = _variant_tokens(variant_text)
+    if not want:
+        return None
+
+    best_name: Optional[str] = None
+    best_score = 0.0
+    for name in names:
+        have = _variant_tokens(name)
+        if not have:
+            continue
+        shared = want & have
+        if not (shared - _VARIANT_STOPWORDS):
+            continue  # only generic words in common — too weak
+        score = len(shared) / len(want | have)
+        if score > best_score:
+            best_score = score
+            best_name = name
+
+    return best_name if best_score >= _VARIANT_MATCH_THRESHOLD else None
+
+
 RECORD_WIN_CHUNK_SIZE = 25
 
 
@@ -1646,6 +1686,8 @@ def cmd_collection_record_win(
     manual_series_count = 0
     metron_lookups_attempted = 0
     metron_lookups_succeeded = 0
+    metron_variant_lookups_attempted = 0
+    metron_variant_matches = 0
     partial_failure = False
     metron_disabled = False
 
@@ -1660,6 +1702,8 @@ def cmd_collection_record_win(
         chunk_manual_series = 0
         chunk_metron_attempted = 0
         chunk_metron_succeeded = 0
+        chunk_variant_detail_attempted = 0
+        chunk_variant_matches = 0
 
         for win in chunk:
             identify = win.get("identify_data") or {}
@@ -1710,11 +1754,34 @@ def cmd_collection_record_win(
             if variant_text:
                 suffix = VARIANT_SUFFIX_MAP.get(variant_text)
                 if suffix:
-                    candidate = f"{base_full_title} {suffix}"
-                    full_title = candidate
+                    full_title = f"{base_full_title} {suffix}"
                 else:
-                    # Unknown variant — check exact cache hit
-                    if base_full_title in existing_titles:
+                    # BUI-33: Metron variant resolution. The lightweight
+                    # lookup_issue has no variants, so fetch issue detail and
+                    # fuzzy-match the auction variant text against Metron's
+                    # variant cover names. (LOCG title-search fallback is dead
+                    # per the local-first pivot, ADR 0001 / BUI-25.)
+                    matched_variant: Optional[str] = None
+                    metron_id = metron_data.get("metron_id") if metron_data else None
+                    if metron_id is not None and not metron_disabled:
+                        try:
+                            chunk_variant_detail_attempted += 1
+                            detail = metron.lookup_issue_detail(metron_id)
+                            if detail:
+                                matched_variant = _fuzzy_variant_match(
+                                    variant_text, detail.get("variants") or []
+                                )
+                        except MetronCredentialError:
+                            metron_disabled = True
+                            logger.warning(
+                                "Metron credentials not configured; skipping variant resolution."
+                            )
+
+                    if matched_variant:
+                        full_title = f"{base_full_title} {matched_variant}"
+                        chunk_variant_matches += 1
+                    elif base_full_title in existing_titles:
+                        # Base issue already owned — attach to the canonical entry.
                         full_title = base_full_title
                     else:
                         full_title = base_full_title
@@ -1771,6 +1838,8 @@ def cmd_collection_record_win(
             manual_series_count += chunk_manual_series
             metron_lookups_attempted += chunk_metron_attempted
             metron_lookups_succeeded += chunk_metron_succeeded
+            metron_variant_lookups_attempted += chunk_variant_detail_attempted
+            metron_variant_matches += chunk_variant_matches
         except Exception as exc:
             logger.error("Chunk commit failed: %s", exc)
             partial_failure = True
@@ -1782,6 +1851,8 @@ def cmd_collection_record_win(
         "manual_series_count": manual_series_count,
         "metron_lookups_attempted": metron_lookups_attempted,
         "metron_lookups_succeeded": metron_lookups_succeeded,
+        "metron_variant_lookups_attempted": metron_variant_lookups_attempted,
+        "metron_variant_matches": metron_variant_matches,
         "partial_failure": partial_failure,
     }
 

@@ -120,6 +120,31 @@ class MetronClient:
             logger.debug("Metron lookup failed for %r #%s: %s", series_query, issue_number, exc)
             return None
 
+    def lookup_issue_detail(self, metron_id: int) -> Optional[dict[str, Any]]:
+        """Fetch full issue detail (incl. variant cover names) for a Metron id.
+
+        ``issues_list`` (used by :meth:`lookup_issue`) returns lightweight
+        ``BaseIssue`` records with no variants, so variant resolution needs the
+        detail endpoint ``session.issue(metron_id)`` (BUI-33).
+
+        Returns ``{"variants": [name, ...]}`` — the names of every variant cover
+        Metron has for the issue — or ``None`` on any failure. MetronCredentialError
+        is re-raised so a batch can disable Metron rather than retry per win.
+        """
+        try:
+            session = self._get_session()
+            issue = session.issue(metron_id)
+            variants = [
+                v.name for v in (getattr(issue, "variants", None) or [])
+                if getattr(v, "name", None)
+            ]
+            return {"variants": variants}
+        except MetronCredentialError:
+            raise
+        except Exception as exc:
+            logger.debug("Metron issue-detail lookup failed for id %s: %s", metron_id, exc)
+            return None
+
     def format_series_name(self, series_data: dict[str, Any]) -> str:
         """Format a canonical series name per R62.
 

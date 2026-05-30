@@ -237,6 +237,55 @@ def test_lookup_issue_swallows_api_error():
 
 
 # ---------------------------------------------------------------------------
+# lookup_issue_detail — variant cover names (BUI-33)
+# ---------------------------------------------------------------------------
+
+def _mock_variant(name: str) -> MagicMock:
+    v = MagicMock()
+    v.name = name
+    return v
+
+
+def test_lookup_issue_detail_returns_variant_names():
+    client = MetronClient()
+    session = MagicMock()
+    issue = MagicMock()
+    issue.variants = [_mock_variant("Capullo Variant"), _mock_variant("Todd McFarlane Cover")]
+    session.issue.return_value = issue
+    client._session = session
+
+    result = client.lookup_issue_detail(5)
+    assert result == {"variants": ["Capullo Variant", "Todd McFarlane Cover"]}
+    session.issue.assert_called_once_with(5)
+
+
+def test_lookup_issue_detail_no_variants():
+    client = MetronClient()
+    session = MagicMock()
+    issue = MagicMock()
+    issue.variants = []
+    session.issue.return_value = issue
+    client._session = session
+    assert client.lookup_issue_detail(5) == {"variants": []}
+
+
+def test_lookup_issue_detail_swallows_exception():
+    client = MetronClient()
+    session = MagicMock()
+    session.issue.side_effect = ConnectionError("down")
+    client._session = session
+    assert client.lookup_issue_detail(5) is None
+
+
+def test_lookup_issue_detail_raises_credential_error(monkeypatch):
+    monkeypatch.delenv("METRON_USERNAME", raising=False)
+    monkeypatch.delenv("METRON_PASSWORD", raising=False)
+    client = MetronClient()
+    with pytest.raises(MetronCredentialError):
+        client.lookup_issue_detail(5)
+
+
+# ---------------------------------------------------------------------------
 # Credential error — raised, not swallowed
 # ---------------------------------------------------------------------------
 
