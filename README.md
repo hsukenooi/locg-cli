@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> **Development has moved into the [comic-pipeline](https://github.com/hsukenooi/comic-pipeline) monorepo.**
+> This repository is archived (read-only). locg-cli now lives at
+> [`packages/locg-cli/`](https://github.com/hsukenooi/comic-pipeline/tree/main/packages/locg-cli)
+> with its full history preserved. The pre-archive state is tagged `pre-monorepo-archive`.
+
 # locg
 
 Command-line interface for [League of Comic Geeks](https://leagueofcomicgeeks.com). Browse releases, search series, manage your collection, pull list, wish list, and read list.
